@@ -1,0 +1,24 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "outDir": "dist",
+    "strict": true,
+    "declaration": false,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "paths": {
+      "@interview-copilot/shared": ["../../packages/shared/src/index.ts"],
+      "@interview-copilot/ai": ["../../packages/ai/src/index.ts"],
+      "@interview-copilot/transcription": ["../../packages/transcription/src/index.ts"],
+      "@interview-copilot/database": ["../../packages/database/src/index.ts"],
+      "@interview-copilot/knowledge": ["../../packages/knowledge/src/index.ts"],
+      "@interview-copilot/interview": ["../../packages/interview/src/index.ts"],
+      "@interview-copilot/github": ["../../packages/github/src/index.ts"],
+      "@interview-copilot/search": ["../../packages/search/src/index.ts"]
+    }
+  },
+  "include": ["src"]
+}
