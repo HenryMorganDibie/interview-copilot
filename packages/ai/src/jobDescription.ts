@@ -50,7 +50,7 @@ export async function parseJobDescription(provider: LLMProvider, text: string): 
 }
 
 function buildLikelyQuestionsSystemPrompt(): string {
-  return `Given a job profile and which requirements the candidate has matching experience for, suggest interview questions the candidate should prepare for. Respond with ONLY a single JSON object: {"questions": string[]}. 5-8 realistic, specific questions — prioritize the requirements marked as matched (ask about that real experience) and the important unmatched ones (the interviewer is likely to probe a gap). No generic filler like "tell me about yourself".`;
+  return `Given a job profile and which requirements the candidate has matching experience for, suggest interview questions the candidate should prepare for. Respond with ONLY a single JSON object: {"questions": string[]}. 12-16 realistic, specific questions covering the full role — prioritize the requirements marked as matched (ask about that real experience), the important unmatched ones (the interviewer is likely to probe a gap), and the practical day-to-day of the responsibilities listed. No generic filler like "tell me about yourself".`;
 }
 
 export async function generateLikelyQuestions(

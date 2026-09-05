@@ -60,6 +60,16 @@ const MAX_SEGMENT_SECS: f32 = 12.0;
 const MIN_SEGMENT_SECS: f32 = 0.35;
 /// Analysis frame size for RMS/silence detection.
 const VAD_FRAME_MS: u64 = 20;
+/// How much audio immediately before a detected speech onset gets prepended
+/// to the segment. Confirmed by testing: a two-clause question played after
+/// a period of silence ("Have you ever reviewed AI-generated code before?
+/// What did that involve?") lost the entire first clause even in isolation,
+/// with no other question nearby — the RMS crossing into "speech" doesn't
+/// happen at the true start of the word (a soft onset ramps up gradually,
+/// and the loudest energy often lands a syllable or two in), so without a
+/// pre-roll the first ~1 syllable-or-more of every utterance-after-silence
+/// is silently dropped before VAD ever notices speech started.
+const PRE_ROLL_MS: u64 = 300;
 
 /// Captures system loopback audio (what's playing through the default
 /// output device — e.g. the interviewer's voice over a video call) and
@@ -171,6 +181,13 @@ fn run_loopback_capture_inner(
     let max_segment_bytes = blockalign as usize * (sample_rate as f32 * MAX_SEGMENT_SECS) as usize;
     let min_segment_bytes = blockalign as usize * (sample_rate as f32 * MIN_SEGMENT_SECS) as usize;
 
+    // Rolling lookback of the audio immediately preceding a speech onset —
+    // see PRE_ROLL_MS's doc comment. Only maintained while waiting for
+    // speech to start; drained into `segment` the instant it does.
+    let pre_roll_frames = (PRE_ROLL_MS / VAD_FRAME_MS) as usize;
+    let pre_roll_max_bytes = vad_frame_bytes * pre_roll_frames;
+    let mut pre_roll: VecDeque<u8> = VecDeque::with_capacity(pre_roll_max_bytes);
+
     // Temporary calibration aid: SILENCE_RMS_THRESHOLD was a guess, and this
     // codebase has been burned before by guessed thresholds that didn't
     // match real measured values (see MATCH_SCORE_THRESHOLD's history).
@@ -227,6 +244,14 @@ fn run_loopback_capture_inner(
             }
 
             if is_speech {
+                if !has_had_speech {
+                    // Onset: prepend whatever we were holding in the
+                    // lookback buffer so the segment includes the audio
+                    // right before VAD noticed speech, not just from the
+                    // frame that crossed the threshold.
+                    segment.extend(pre_roll.iter().copied());
+                    pre_roll.clear();
+                }
                 silence_ms_run = 0;
                 has_had_speech = true;
                 segment.extend_from_slice(&frame);
@@ -235,9 +260,17 @@ fn run_loopback_capture_inner(
                 // cadence) rather than clipping the instant speech stops.
                 segment.extend_from_slice(&frame);
                 silence_ms_run += VAD_FRAME_MS;
+            } else {
+                // Silence before any speech has started this segment:
+                // don't add it to the segment (would waste buffer/latency
+                // on dead air), but keep a short rolling lookback in case
+                // speech starts within the next PRE_ROLL_MS.
+                pre_roll.extend(frame.iter().copied());
+                while pre_roll.len() > pre_roll_max_bytes {
+                    let excess = pre_roll.len() - pre_roll_max_bytes;
+                    pre_roll.drain(..excess);
+                }
             }
-            // Silence before any speech has started this segment: drop it,
-            // don't waste buffer/latency on dead air.
 
             let should_flush = has_had_speech
                 && (silence_ms_run >= SILENCE_HANG_MS || segment.len() >= max_segment_bytes);
