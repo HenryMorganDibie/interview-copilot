@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ChevronDown } from "lucide-react";
+import { Link } from "react-router-dom";
+import { ChevronDown, ChevronLeft } from "lucide-react";
 import type { InterviewAnswer, SpeechToTextProvider, TranscriptEvent } from "@interview-copilot/shared";
 import { LiveSessionOrchestrator } from "@interview-copilot/interview";
 import { Badge } from "@/components/ui/badge";
@@ -159,7 +160,13 @@ export function LiveInterviewPage() {
   return (
     <div className="flex h-full flex-col">
       <div className="flex items-center justify-between border-b border-border px-8 py-4">
-        <p className="text-sm font-semibold">Interview Copilot</p>
+        <Link
+          to="/"
+          className="flex items-center gap-1 text-sm font-semibold text-foreground hover:text-muted-foreground"
+        >
+          <ChevronLeft className="size-4" />
+          Interview Copilot
+        </Link>
         <div className="flex items-center gap-3">
           <Badge variant={state === "listening" ? "default" : "secondary"} className="gap-1.5">
             <span

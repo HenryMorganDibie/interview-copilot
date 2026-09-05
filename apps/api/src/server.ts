@@ -88,6 +88,18 @@ app.use(express.json({ limit: "2mb" }));
 
 const upload = multer({ limits: { fileSize: 10 * 1024 * 1024 } });
 
+// Last-resort safety net, not a substitute for the per-route try/catch
+// above -- found live that a single unguarded fetch (GitHub's API timing
+// out) surfaced as an unhandled rejection that crashed this entire process,
+// taking down every feature (live interview included) over a hiccup in one
+// unrelated external call. Route handlers should still catch their own
+// errors (this only logs, it doesn't tell the caller anything went wrong),
+// but the whole server going down over one bad external call is strictly
+// worse than logging and staying up.
+process.on("unhandledRejection", (reason) => {
+  console.error("Unhandled rejection (server stayed up):", reason);
+});
+
 app.get("/api/health", (_req, res) => {
   res.json({ ok: true });
 });
@@ -280,14 +292,24 @@ app.get("/api/github/status", async (_req, res) => {
     res.json({ connected: false, deviceFlowAvailable });
     return;
   }
-  const user = await getAuthenticatedUser(githubToken);
-  if (!user) {
-    // Token is set but no longer valid (revoked/expired) — don't keep claiming connected.
-    githubToken = undefined;
+  // This route is called on every Overview/GitHub page load, not just when
+  // the user explicitly asks to connect -- a network hiccup reaching GitHub
+  // (seen live: a real ConnectTimeoutError to api.github.com) must degrade
+  // to "can't confirm connection" for this one request, not crash the whole
+  // server and take down every other feature with it.
+  try {
+    const user = await getAuthenticatedUser(githubToken);
+    if (!user) {
+      // Token is set but no longer valid (revoked/expired) — don't keep claiming connected.
+      githubToken = undefined;
+      res.json({ connected: false, deviceFlowAvailable });
+      return;
+    }
+    res.json({ connected: true, username: user.login, deviceFlowAvailable });
+  } catch (error) {
+    console.error("GitHub status check failed:", error);
     res.json({ connected: false, deviceFlowAvailable });
-    return;
   }
-  res.json({ connected: true, username: user.login, deviceFlowAvailable });
 });
 
 app.post("/api/github/connect", async (req, res) => {
@@ -296,13 +318,18 @@ app.post("/api/github/connect", async (req, res) => {
     res.status(400).json({ error: "Missing token in request body" });
     return;
   }
-  const user = await getAuthenticatedUser(token.trim());
-  if (!user) {
-    res.status(401).json({ error: "GitHub rejected that token — check it's valid and hasn't expired." });
-    return;
+  try {
+    const user = await getAuthenticatedUser(token.trim());
+    if (!user) {
+      res.status(401).json({ error: "GitHub rejected that token — check it's valid and hasn't expired." });
+      return;
+    }
+    githubToken = token.trim();
+    res.json({ connected: true, username: user.login });
+  } catch (error) {
+    console.error("GitHub connect failed:", error);
+    res.status(502).json({ error: "Couldn't reach GitHub — check your connection and try again." });
   }
-  githubToken = token.trim();
-  res.json({ connected: true, username: user.login });
 });
 
 app.post("/api/github/device/start", async (_req, res) => {
@@ -325,11 +352,19 @@ app.post("/api/github/device/poll", async (req, res) => {
     res.status(400).json({ error: "Missing deviceCode or GITHUB_CLIENT_ID not configured" });
     return;
   }
-  const result = await pollDeviceToken(GITHUB_CLIENT_ID, deviceCode);
-  if (result.status === "success") {
-    githubToken = result.accessToken;
+  try {
+    const result = await pollDeviceToken(GITHUB_CLIENT_ID, deviceCode);
+    if (result.status === "success") {
+      githubToken = result.accessToken;
+    }
+    res.json(result);
+  } catch (error) {
+    console.error("GitHub device poll failed:", error);
+    // "pending" (not "error") -- the frontend's poll loop will just try
+    // again on its next interval, matching the shape network flakiness
+    // should have here: transient, not "the whole device-flow attempt failed."
+    res.json({ status: "pending" });
   }
-  res.json(result);
 });
 
 app.get("/api/github/repos", async (_req, res) => {
