@@ -8,8 +8,36 @@ CREATE TABLE IF NOT EXISTS knowledge_sources (
   mime_type TEXT,
   raw_text TEXT NOT NULL,
   metadata JSONB NOT NULL DEFAULT '{}',
+  -- Stable identity for a source that has one (e.g. "github:owner/repo",
+  -- "cv:my-resume.pdf") so re-ingesting the same thing replaces it instead
+  -- of piling up duplicate rows that retrieval then has to sift through.
+  -- NULL for sources with no natural stable key -- a NULL never conflicts
+  -- with another NULL, so those always insert as new rows.
+  source_key TEXT UNIQUE,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Safe to re-run against an existing database (e.g. after pulling this
+-- change) -- ADD COLUMN IF NOT EXISTS is a no-op if the CREATE TABLE above
+-- already provided it on a fresh install.
+ALTER TABLE knowledge_sources ADD COLUMN IF NOT EXISTS source_key TEXT UNIQUE;
+
+-- One-time backfill so sources ingested before source_key existed still
+-- get real dedup behavior on their next re-ingest, not just newly-created
+-- ones. Only backfills the most recently created row per (source_type,
+-- lower(source_name)) group -- if pre-existing duplicate rows already
+-- exist from before this fix (exactly the bug this column fixes going
+-- forward), backfilling every one of them would collide on the UNIQUE
+-- constraint; older duplicates are left with a NULL key (never conflicts,
+-- harmless) rather than failing this migration. No-op once already run.
+UPDATE knowledge_sources s
+SET source_key = s.source_type || ':' || lower(s.source_name)
+WHERE s.source_key IS NULL
+  AND s.id = (
+    SELECT id FROM knowledge_sources s2
+    WHERE s2.source_type = s.source_type AND lower(s2.source_name) = lower(s.source_name)
+    ORDER BY created_at DESC LIMIT 1
+  );
 
 -- 384 dims matches all-MiniLM-L6-v2 / Xenova/all-MiniLM-L6-v2 (local, free,
 -- no API key), the default embedding model — see packages/knowledge.

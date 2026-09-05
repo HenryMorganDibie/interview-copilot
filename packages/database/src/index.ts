@@ -1,7 +1,6 @@
 export { getPool } from "./pool.js";
 export {
-  insertKnowledgeSource,
-  insertKnowledgeChunks,
+  upsertKnowledgeSourceWithChunks,
   searchKnowledgeChunks,
   keywordSearchKnowledgeChunks,
   listKnowledgeSources,

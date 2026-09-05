@@ -1,5 +1,5 @@
 import type { KnowledgeSourceType } from "@interview-copilot/shared";
-import { insertKnowledgeChunks, insertKnowledgeSource } from "@interview-copilot/database";
+import { upsertKnowledgeSourceWithChunks } from "@interview-copilot/database";
 import { parseDocument } from "./parser.js";
 import { chunkText } from "./chunker.js";
 import { OllamaEmbeddingClient } from "./embeddings.js";
@@ -43,24 +43,24 @@ export async function ingestDocument(input: IngestDocumentInput): Promise<Ingest
 /**
  * Text-based ingestion — same pipeline as ingestDocument minus the parse
  * step, for sources that already come in as plain text (GitHub READMEs,
- * pasted job descriptions, etc) rather than an uploaded file. Never leaves
- * partial chunks with no source — chunks are only inserted after the
- * source row commits.
+ * pasted job descriptions, etc) rather than an uploaded file.
+ *
+ * Parsing/chunking/embedding all happen before anything touches Postgres,
+ * and the source-plus-chunks write is one atomic transaction
+ * (upsertKnowledgeSourceWithChunks) — so a failure anywhere in this
+ * pipeline (a bad file, Ollama down, an empty document) never reaches the
+ * database at all, and never leaves a source row with no chunks.
+ *
+ * Re-ingesting the same source (same sourceType + sourceName, e.g.
+ * re-ingesting "HenryMorganDibie/schema-watch" or re-uploading a CV under
+ * the same display name) replaces the existing row and its chunks instead
+ * of piling up duplicates that retrieval then has to sift through.
  */
 export async function ingestText(input: IngestTextInput): Promise<IngestResult> {
   const normalized = normalizeText(input.text);
   if (!normalized.trim()) {
     throw new Error(`No extractable text found for ${input.sourceName}`);
   }
-
-  const source = await insertKnowledgeSource({
-    sourceType: input.sourceType,
-    sourceName: input.sourceName,
-    originalFilename: input.originalFilename,
-    mimeType: input.mimeType,
-    rawText: normalized,
-    metadata: input.metadata,
-  });
 
   const chunks = chunkText(normalized);
   // Embed with the source name folded in (but store the chunk's own text
@@ -76,15 +76,22 @@ export async function ingestText(input: IngestTextInput): Promise<IngestResult> 
     chunks.map((chunk) => `${input.sourceName}\n\n${chunk}`),
   );
 
-  await insertKnowledgeChunks(
-    chunks.map((content, i) => ({
-      sourceId: source.id,
-      content,
-      embedding: embeddings[i],
-    })),
+  const sourceKey = `${input.sourceType}:${input.sourceName.trim().toLowerCase()}`;
+
+  const source = await upsertKnowledgeSourceWithChunks(
+    {
+      sourceType: input.sourceType,
+      sourceName: input.sourceName,
+      originalFilename: input.originalFilename,
+      mimeType: input.mimeType,
+      rawText: normalized,
+      metadata: input.metadata,
+      sourceKey,
+    },
+    chunks.map((content, i) => ({ content, embedding: embeddings[i] })),
   );
 
-  return { sourceId: source.id, chunkCount: chunks.length };
+  return { sourceId: source.id, chunkCount: source.chunkCount };
 }
 
 /** Collapses excess whitespace/blank lines from raw extracted text. */

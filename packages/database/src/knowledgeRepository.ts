@@ -8,45 +8,15 @@ type InsertSourceInput = {
   mimeType?: string;
   rawText: string;
   metadata?: Record<string, unknown>;
+  /**
+   * Stable identity for sources that have one (e.g. "github:owner/repo",
+   * "cv:my-resume.pdf") -- re-ingesting with the same key replaces the
+   * existing source and its chunks instead of creating a duplicate row.
+   * Omit for sources with no natural stable key; each such call inserts a
+   * new row (NULL never conflicts with another NULL).
+   */
+  sourceKey?: string;
 };
-
-export async function insertKnowledgeSource(input: InsertSourceInput): Promise<KnowledgeSource> {
-  const pool = getPool();
-  const { rows } = await pool.query<{
-    id: string;
-    source_type: KnowledgeSourceType;
-    source_name: string;
-    original_filename: string | null;
-    mime_type: string | null;
-    raw_text: string;
-    metadata: Record<string, unknown>;
-    created_at: string;
-  }>(
-    `INSERT INTO knowledge_sources (source_type, source_name, original_filename, mime_type, raw_text, metadata)
-     VALUES ($1, $2, $3, $4, $5, $6)
-     RETURNING id, source_type, source_name, original_filename, mime_type, raw_text, metadata, created_at`,
-    [
-      input.sourceType,
-      input.sourceName,
-      input.originalFilename ?? null,
-      input.mimeType ?? null,
-      input.rawText,
-      JSON.stringify(input.metadata ?? {}),
-    ],
-  );
-
-  const row = rows[0];
-  return {
-    id: row.id,
-    sourceType: row.source_type,
-    sourceName: row.source_name,
-    originalFilename: row.original_filename ?? undefined,
-    mimeType: row.mime_type ?? undefined,
-    rawText: row.raw_text,
-    metadata: row.metadata,
-    createdAt: row.created_at,
-  };
-}
 
 type InsertChunkInput = {
   sourceId: string;
@@ -62,19 +32,68 @@ function toVectorLiteral(embedding: number[]): string {
   return `[${embedding.join(",")}]`;
 }
 
-export async function insertKnowledgeChunks(chunks: InsertChunkInput[]): Promise<void> {
-  if (chunks.length === 0) return;
+/**
+ * Upserts a source and (re)writes its chunks in a single transaction. Chunks
+ * must already be parsed/embedded before calling this -- nothing here talks
+ * to an external service, so a failure anywhere upstream (parsing,
+ * embedding) never reaches Postgres at all, and a failure here rolls back
+ * atomically instead of leaving a source row with no chunks (or, on
+ * re-ingest, half-replaced chunks).
+ */
+export async function upsertKnowledgeSourceWithChunks(
+  source: InsertSourceInput,
+  chunks: Omit<InsertChunkInput, "sourceId">[],
+): Promise<KnowledgeSource & { chunkCount: number }> {
   const pool = getPool();
   const client = await pool.connect();
 
   try {
     await client.query("BEGIN");
+
+    const { rows } = await client.query<{
+      id: string;
+      source_type: KnowledgeSourceType;
+      source_name: string;
+      original_filename: string | null;
+      mime_type: string | null;
+      raw_text: string;
+      metadata: Record<string, unknown>;
+      created_at: string;
+    }>(
+      `INSERT INTO knowledge_sources (source_type, source_name, original_filename, mime_type, raw_text, metadata, source_key)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       ON CONFLICT (source_key) DO UPDATE SET
+         source_type = EXCLUDED.source_type,
+         source_name = EXCLUDED.source_name,
+         original_filename = EXCLUDED.original_filename,
+         mime_type = EXCLUDED.mime_type,
+         raw_text = EXCLUDED.raw_text,
+         metadata = EXCLUDED.metadata,
+         created_at = now()
+       RETURNING id, source_type, source_name, original_filename, mime_type, raw_text, metadata, created_at`,
+      [
+        source.sourceType,
+        source.sourceName,
+        source.originalFilename ?? null,
+        source.mimeType ?? null,
+        source.rawText,
+        JSON.stringify(source.metadata ?? {}),
+        source.sourceKey ?? null,
+      ],
+    );
+    const row = rows[0];
+
+    // Harmless no-op on a brand-new source; clears the previous chunk set
+    // on a re-ingest (upsert) so stale chunks never linger alongside fresh
+    // ones under the same source.
+    await client.query(`DELETE FROM knowledge_chunks WHERE source_id = $1`, [row.id]);
+
     for (const chunk of chunks) {
       await client.query(
         `INSERT INTO knowledge_chunks (source_id, content, project, repository, tags, metadata, embedding)
          VALUES ($1, $2, $3, $4, $5, $6, $7::vector)`,
         [
-          chunk.sourceId,
+          row.id,
           chunk.content,
           chunk.project ?? null,
           chunk.repository ?? null,
@@ -84,7 +103,20 @@ export async function insertKnowledgeChunks(chunks: InsertChunkInput[]): Promise
         ],
       );
     }
+
     await client.query("COMMIT");
+
+    return {
+      id: row.id,
+      sourceType: row.source_type,
+      sourceName: row.source_name,
+      originalFilename: row.original_filename ?? undefined,
+      mimeType: row.mime_type ?? undefined,
+      rawText: row.raw_text,
+      metadata: row.metadata,
+      createdAt: row.created_at,
+      chunkCount: chunks.length,
+    };
   } catch (error) {
     await client.query("ROLLBACK");
     throw error;
