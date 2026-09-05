@@ -1,0 +1,106 @@
+[
+  {
+    "id": "q1",
+    "question": "How does Schema-Watch detect breaking API changes?",
+    "category": "personal_experience",
+    "expectedSourceContains": "schema-watch"
+  },
+  {
+    "id": "q2",
+    "question": "How did you integrate Schema-Watch into CI to fail builds on breaking changes?",
+    "category": "personal_experience",
+    "expectedSourceContains": "schema-watch"
+  },
+  {
+    "id": "q3",
+    "question": "Tell me about the MVNO Intelligence Hub project and how it predicts subscriber usage.",
+    "category": "personal_experience",
+    "expectedSourceContains": "mvno"
+  },
+  {
+    "id": "q4",
+    "question": "How does the peer-to-peer data donation matching work in your telecom project?",
+    "category": "personal_experience",
+    "expectedSourceContains": "mvno"
+  },
+  {
+    "id": "q5",
+    "question": "What forecasting method did you use to predict month-end data shortfalls?",
+    "category": "personal_experience",
+    "expectedSourceContains": "mvno"
+  },
+  {
+    "id": "q6",
+    "question": "How does your Snowflake semantic layer agent prevent AI from writing raw SQL?",
+    "category": "personal_experience",
+    "expectedSourceContains": "snowflake"
+  },
+  {
+    "id": "q7",
+    "question": "What is dbt MetricFlow and how did you use it in your Snowflake project?",
+    "category": "personal_experience",
+    "expectedSourceContains": "snowflake"
+  },
+  {
+    "id": "q8",
+    "question": "How many years of experience do you have as a data engineer?",
+    "category": "personal_experience",
+    "expectedSourceContains": null
+  },
+  {
+    "id": "q9",
+    "question": "What industries have you worked in as a data engineer?",
+    "category": "personal_experience",
+    "expectedSourceContains": null
+  },
+  {
+    "id": "q10",
+    "question": "Have you mentored other engineers before?",
+    "category": "personal_experience",
+    "expectedSourceContains": null
+  },
+  {
+    "id": "q11",
+    "question": "Why did you choose SFTP for ingesting subscriber data files?",
+    "category": "personal_experience",
+    "expectedSourceContains": "mvno"
+  },
+  {
+    "id": "q12",
+    "question": "What license does Schema-Watch use?",
+    "category": "personal_experience",
+    "expectedSourceContains": "schema-watch"
+  },
+  {
+    "id": "q13",
+    "question": "Tell me about your experience building rocket engine control software.",
+    "category": "no_evidence",
+    "expectedSourceContains": null
+  },
+  {
+    "id": "q14",
+    "question": "What's your experience with quantum computing algorithms?",
+    "category": "no_evidence",
+    "expectedSourceContains": null
+  },
+  {
+    "id": "q15",
+    "question": "Describe a time you led a team of 50 people on a construction project.",
+    "category": "no_evidence",
+    "expectedSourceContains": null
+  },
+  {
+    "id": "q16",
+    "question": "What new features were released in Next.js this year?",
+    "category": "current_information",
+    "expectedSourceContains": null,
+    "requiresWebResearch": true
+  },
+  {
+    "id": "q17",
+    "question": "What is the latest version of PostgreSQL?",
+    "category": "current_information",
+    "expectedSourceContains": null,
+    "requiresWebResearch": true
+  }
+]

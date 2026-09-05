@@ -50,7 +50,12 @@ const router = createDefaultRouter({
 });
 
 const app = express();
-app.use(cors({ origin: "http://localhost:1420" }));
+// This API only ever binds to 127.0.0.1 and is never exposed beyond this
+// machine, so origin whitelisting buys no real security here — it was
+// actually breaking the installed app, which serves its frontend from
+// Tauri's bundled-asset origin (https://tauri.localhost), not
+// http://localhost:1420 (that's only the Vite dev server's origin).
+app.use(cors({ origin: true }));
 app.use(express.json({ limit: "2mb" }));
 
 const upload = multer({ limits: { fileSize: 10 * 1024 * 1024 } });
@@ -98,9 +103,18 @@ app.post("/api/answer", async (req, res) => {
   // is grounding the answer in what's actually stored, not whatever a
   // caller happens to send. Retrieval failure degrades to no evidence
   // rather than failing the whole request (spec: graceful degradation).
+  //
+  // Always runs, regardless of requiresPersonalExperience — an earlier
+  // version hard-skipped retrieval when that flag was false, but a second
+  // evaluation run showed the analyzer sometimes gets that flag wrong even
+  // for genuinely personal questions, which then lost all evidence outright.
+  // Instead, a non-personal classification just raises the bar for what
+  // counts as usable evidence (chunksToEvidence's `strict` mode), so a
+  // borderline/spurious match can't attach a misleading source, but a
+  // strong match still comes through even if the analyzer guessed wrong.
   try {
     const retrieved = await retrieveRelevantChunks(context.question);
-    context.evidence = chunksToEvidence(retrieved);
+    context.evidence = chunksToEvidence(retrieved, context.analysis.requiresPersonalExperience === false);
   } catch (error) {
     console.error("evidence retrieval failed:", error);
     context.evidence = [];

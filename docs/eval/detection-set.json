@@ -1,0 +1,14 @@
+[
+  { "text": "Why did you choose that architecture for the pipeline?", "isRealQuestion": true },
+  { "text": "What was the hardest bug you had to fix in that system?", "isRealQuestion": true },
+  { "text": "How would you scale that to ten times the traffic?", "isRealQuestion": true },
+  { "text": "Walk me through your decision to use Prophet over another forecasting library.", "isRealQuestion": true },
+  { "text": "What tradeoffs did you consider with the semantic layer approach?", "isRealQuestion": true },
+  { "text": "Can you explain how the CI integration actually blocks a merge?", "isRealQuestion": true },
+  { "text": "Thank you.", "isRealQuestion": false },
+  { "text": "Okay, got it.", "isRealQuestion": false },
+  { "text": "Yeah, that makes sense.", "isRealQuestion": false },
+  { "text": "Alright, let's move to the next one.", "isRealQuestion": false },
+  { "text": "Mm-hmm.", "isRealQuestion": false },
+  { "text": "Great, thanks for sharing that.", "isRealQuestion": false }
+]

@@ -3,6 +3,7 @@ import { PageHeader } from "@/components/layout/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   getGitHubStatus,
   ingestGitHubRepo,
@@ -21,8 +22,10 @@ export function GitHubPage() {
   const [deviceInfo, setDeviceInfo] = useState<DeviceCodeResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [repos, setRepos] = useState<GitHubRepo[]>([]);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
   const [ingesting, setIngesting] = useState<string | null>(null);
   const [ingested, setIngested] = useState<Set<string>>(new Set());
+  const [bulkProgress, setBulkProgress] = useState<{ done: number; total: number } | null>(null);
   const pollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const refreshStatus = useCallback(async () => {
@@ -91,6 +94,45 @@ export function GitHubPage() {
     }
   }, []);
 
+  const toggleSelected = useCallback((fullName: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(fullName)) next.delete(fullName);
+      else next.add(fullName);
+      return next;
+    });
+  }, []);
+
+  const handleIngestSelected = useCallback(async () => {
+    const targets = repos.filter((r) => selected.has(r.fullName));
+    if (targets.length === 0) return;
+
+    setError(null);
+    setBulkProgress({ done: 0, total: targets.length });
+
+    // Sequential, not parallel: each ingestion runs an LLM call for project
+    // profile extraction plus local embeddings — same reasoning as the
+    // multi-file knowledge upload, this machine can't do several at once
+    // without starving each other.
+    const failures: string[] = [];
+    for (let i = 0; i < targets.length; i++) {
+      const repo = targets[i];
+      setIngesting(repo.fullName);
+      try {
+        await ingestGitHubRepo(repo.owner, repo.name);
+        setIngested((prev) => new Set(prev).add(repo.fullName));
+      } catch (err) {
+        failures.push(`${repo.fullName}: ${err instanceof Error ? err.message : "failed"}`);
+      }
+      setBulkProgress({ done: i + 1, total: targets.length });
+    }
+
+    setIngesting(null);
+    setBulkProgress(null);
+    setSelected(new Set());
+    if (failures.length > 0) setError(failures.join("; "));
+  }, [repos, selected]);
+
   return (
     <div>
       <PageHeader
@@ -100,8 +142,17 @@ export function GitHubPage() {
       <div className="max-w-2xl space-y-4 p-8">
         {state === "connected" ? (
           <>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center justify-between gap-2">
               <Badge>Connected as {username}</Badge>
+              <Button
+                size="sm"
+                disabled={selected.size === 0 || bulkProgress !== null}
+                onClick={handleIngestSelected}
+              >
+                {bulkProgress
+                  ? `Ingesting ${bulkProgress.done}/${bulkProgress.total}...`
+                  : `Ingest selected${selected.size > 0 ? ` (${selected.size})` : ""}`}
+              </Button>
             </div>
             {error ? <p className="text-xs text-destructive">{error}</p> : null}
             <ul className="space-y-2">
@@ -110,21 +161,28 @@ export function GitHubPage() {
                   key={repo.id}
                   className="flex items-center justify-between rounded-md border border-border px-4 py-3"
                 >
-                  <div>
-                    <p className="text-sm font-medium">{repo.fullName}</p>
-                    {repo.description ? (
-                      <p className="text-xs text-muted-foreground">{repo.description}</p>
-                    ) : null}
-                    {repo.language ? (
-                      <Badge variant="secondary" className="mt-1 text-xs">
-                        {repo.language}
-                      </Badge>
-                    ) : null}
+                  <div className="flex items-start gap-3">
+                    <Checkbox
+                      checked={selected.has(repo.fullName)}
+                      onCheckedChange={() => toggleSelected(repo.fullName)}
+                      className="mt-1"
+                    />
+                    <div>
+                      <p className="text-sm font-medium">{repo.fullName}</p>
+                      {repo.description ? (
+                        <p className="text-xs text-muted-foreground">{repo.description}</p>
+                      ) : null}
+                      {repo.language ? (
+                        <Badge variant="secondary" className="mt-1 text-xs">
+                          {repo.language}
+                        </Badge>
+                      ) : null}
+                    </div>
                   </div>
                   <Button
                     size="sm"
                     variant={ingested.has(repo.fullName) ? "outline" : "default"}
-                    disabled={ingesting === repo.fullName}
+                    disabled={ingesting === repo.fullName || bulkProgress !== null}
                     onClick={() => handleIngest(repo)}
                   >
                     {ingesting === repo.fullName

@@ -35,22 +35,38 @@ export function KnowledgeBasePage() {
     refresh();
   }, [refresh]);
 
+  const [uploadProgress, setUploadProgress] = useState<{ done: number; total: number } | null>(null);
+
   const handleFileChange = useCallback(
     async (e: React.ChangeEvent<HTMLInputElement>) => {
-      const file = e.target.files?.[0];
+      const files = Array.from(e.target.files ?? []);
       e.target.value = "";
-      if (!file) return;
+      if (files.length === 0) return;
 
       setUploading(true);
       setError(null);
-      try {
-        await uploadKnowledgeDocument(file, sourceType);
-        refresh();
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to upload document");
-      } finally {
-        setUploading(false);
+      setUploadProgress({ done: 0, total: files.length });
+
+      // Sequential, not parallel: each upload embeds via the local Ollama
+      // model, and this machine can't run several embedding calls at once
+      // without starving each other (same lesson as local LLM benchmarking
+      // elsewhere in this app).
+      const failures: string[] = [];
+      for (let i = 0; i < files.length; i++) {
+        try {
+          await uploadKnowledgeDocument(files[i], sourceType);
+        } catch (err) {
+          failures.push(`${files[i].name}: ${err instanceof Error ? err.message : "failed"}`);
+        }
+        setUploadProgress({ done: i + 1, total: files.length });
       }
+
+      if (failures.length > 0) {
+        setError(failures.join("; "));
+      }
+      setUploading(false);
+      setUploadProgress(null);
+      refresh();
     },
     [sourceType, refresh],
   );
@@ -86,18 +102,23 @@ export function KnowledgeBasePage() {
                 </SelectContent>
               </Select>
               <Button onClick={() => fileInputRef.current?.click()} disabled={uploading}>
-                {uploading ? "Uploading..." : "Upload document"}
+                {uploading && uploadProgress
+                  ? `Uploading ${uploadProgress.done}/${uploadProgress.total}...`
+                  : "Upload documents"}
               </Button>
               <input
                 ref={fileInputRef}
                 type="file"
                 accept=".pdf,.md,.txt"
+                multiple
                 className="hidden"
                 onChange={handleFileChange}
               />
             </div>
             {error ? <p className="text-xs text-destructive">{error}</p> : null}
-            <p className="text-xs text-muted-foreground">PDF, Markdown, or plain text.</p>
+            <p className="text-xs text-muted-foreground">
+              PDF, Markdown, or plain text. You can select multiple files at once.
+            </p>
           </CardContent>
         </Card>
 

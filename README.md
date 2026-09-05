@@ -1,31 +1,115 @@
 # Interview Copilot
 
-A real-time interview preparation desktop app. Listens to a mock or
-permitted interview (your mic + system/loopback audio), detects when the
-interviewer has asked a question, retrieves your strongest relevant
-evidence from your own CV/GitHub projects, and generates a concise,
-grounded answer — never fabricating experience you don't have.
+A local-first, grounded AI system for **interview preparation and simulated interview practice**: it listens to a mock or explicitly-permitted interview, detects when the interviewer has asked a real question, retrieves your strongest relevant evidence from your own CV and GitHub projects, and generates a concise answer grounded in what you've actually done — never fabricating experience you don't have.
 
-Built with Tauri, React, TypeScript, and a local-first LLM/embedding stack
-(Ollama by default, Groq as a free-tier fallback) so it runs at zero
-ongoing cost.
+![Live interview screen, mid-answer](docs/screenshots/live-interview.png)
+
+*Live session: the interviewer's question ("MVNO Intelligence Hub" — garbled here by same-room speaker→mic transcription noise, a known characteristic of this specific test rig, see [evaluation notes](docs/eval/RESULTS.md)) came through unrecognizable, and the model correctly declined to answer rather than guessing. That refusal is the grounding policy working as designed, not a failure — see below.*
+
+```mermaid
+flowchart TD
+    subgraph Desktop["Tauri Desktop App"]
+        Mic["Microphone capture"]
+        Loopback["WASAPI system-audio\nloopback capture (Rust)"]
+        UI["React UI\n(live answer panel)"]
+    end
+
+    subgraph Backend["Local API (Node/Express, 127.0.0.1 only)"]
+        Whisper["Groq Whisper\ntranscription"]
+        Detect["Question detection\n(debounced, LLM-classified)"]
+        Retrieve["Evidence retrieval\n(pgvector cosine + keyword)"]
+        Router["LLM Router\nOllama -> Groq -> Anthropic(opt)"]
+        Web["Web research\n(Tavily, only if requiresWebResearch)"]
+    end
+
+    subgraph Store["Knowledge Base"]
+        PG[("Postgres + pgvector")]
+        GH["GitHub repos\n(README + extracted profile)"]
+        CV["CV / documents"]
+    end
+
+    Mic --> Whisper
+    Loopback --> Whisper
+    Whisper --> Detect
+    Detect -->|"question confirmed"| Retrieve
+    Retrieve --> PG
+    GH --> PG
+    CV --> PG
+    Retrieve --> Router
+    Detect -->|"requiresWebResearch"| Web
+    Web --> Router
+    Router -->|"streamed tokens"| UI
+```
+
+## What this is (and isn't)
+
+This is built for **rehearsing answers grounded in your real experience** before a real interview, or for use in contexts where AI assistance during an interview is explicitly permitted — not for covertly answering a live interview where AI use isn't disclosed. The core engineering constraint — never fabricate experience you don't have — exists specifically because misrepresenting your background, AI-assisted or not, is the actual failure mode this project treats as unacceptable. See the [grounding policy](#grounding-policy) below for how that's enforced in code, not just prompted for.
+
+## Grounding policy
+
+1. Personal claims must come from your own knowledge base (CV, GitHub projects) — never invented.
+2. The model may synthesize phrasing, but not invent experience, outcomes, or metrics that aren't in the source material.
+3. Missing evidence → the answer says so plainly rather than guessing (verified in [evaluation](docs/eval/RESULTS.md): 0/3 no-evidence test questions fabricated a claim).
+4. External/current facts (e.g. "what's new in Next.js") go through web research, gated by the question analyzer's `requiresWebResearch` flag — not asked on every question.
+5. Web research never gets blended into personal evidence: retrieval always runs, but a question the analyzer flags as non-personal has to clear a higher evidence bar, so a current-events answer can't accidentally cite an unrelated CV line as a "source."
+
+This is enforced in code: `packages/knowledge`'s evidence retrieval and `apps/api`'s `/api/answer` route both consult the question analyzer's output, and every "source" attached to an answer is built from the app's own retrieval — never trusted from client input. Two real bugs in this logic were found and fixed by actually running an evaluation, not by inspection — see [`docs/eval/RESULTS.md`](docs/eval/RESULTS.md) for the details, including a fix that initially over-corrected and was caught by a second independent eval run.
+
+## How it works
+
+1. **Prep, before the interview**: upload your CV, connect GitHub and select repos to ingest, optionally paste a job description for requirement matching and likely-question prep.
+2. **During the interview**: click Start Listening. Your microphone and your system's audio output (whatever the interviewer's voice is playing through — Zoom, Google Meet, anything) are both transcribed in real time.
+3. When the interviewer finishes a question (detected via a debounce + LLM classification, not fired on every audio fragment), the app retrieves your most relevant real evidence and streams a grounded, spoken-length answer for you to read.
+
+## Screenshots
+
+| Knowledge Base | GitHub ingestion |
+|---|---|
+| ![Knowledge base with real CVs and repos](docs/screenshots/knowledge-base.png) | ![Connected GitHub account with repo list](docs/screenshots/github.png) |
+
+| Job description matching |
+|---|
+| ![Real job description matched against the knowledge base, showing requirement hits with source attribution](docs/screenshots/job-descriptions.png) |
+
+## Evaluation
+
+Measured against the real running app (not fabricated numbers) — see [`docs/eval/RESULTS.md`](docs/eval/RESULTS.md) for the full writeup, methodology, and the two real bugs it caught before they shipped.
+
+| Metric | Result |
+|---|---:|
+| Question detection accuracy | 91.7%–100% across 3 runs |
+| Retrieval hit rate (known-source questions) | 88.9%–100% across runs |
+| No-evidence questions correctly declined (not fabricated) | 3/3 |
+| Web-research questions with zero misattributed personal sources | 2/2 (after fix) |
+| First-token latency (mean / median / P90) | 4.3s / 3.5s / 6.4s |
+| Full-answer latency (mean / median / P90) | 6.0s / 5.8s / 9.5s |
+
+Latency is slower than the sub-2s aspiration — this is a CPU-only, 8GB-RAM machine, and the tail is dominated by the local Ollama pool attempting a local model before failing over to Groq. Reported honestly rather than tuned to look better; see the eval doc for why.
+
+## Security & scope
+
+This is a **single-user, local-first desktop tool**, not a multi-tenant service:
+
+- The API binds to `127.0.0.1` only — never reachable from outside the machine.
+- All provider API keys (Groq, GitHub, Tavily) live server-side in `apps/api/.env`, never sent to the frontend.
+- The GitHub token is held in an in-memory process variable, not persisted to disk or a database — process-local by design for a tool one person runs on their own machine.
+- No candidate data is sent to any provider beyond what's needed for that specific request (transcription, embeddings, generation).
 
 ## Status
 
-Actively in development. Working end-to-end:
+Actively in development. Working end-to-end, verified against the real running app (not just typechecked):
 
-- Desktop shell (Tauri + React + Tailwind + shadcn/ui)
+- Desktop shell (Tauri + React + Tailwind + shadcn/ui), packaged as a real Windows installer (MSI/NSIS) that auto-starts Postgres and the API server on launch
 - Mic capture + native Windows (WASAPI) system-audio loopback capture, both transcribed via Groq Whisper
-- Provider-agnostic LLM router with automatic failover (local Ollama pool → Groq → optional Anthropic)
-- Knowledge base: CV/document upload, chunking, local embeddings, Postgres/pgvector retrieval
-- GitHub repo ingestion (README + structured project-profile extraction)
-- Job description parsing, requirement matching, likely questions, STAR story drafts
+- Provider-agnostic LLM router with automatic failover (benchmarked local Ollama pool → Groq → optional Anthropic)
+- Knowledge base: multi-file CV/document upload, chunking, local embeddings, Postgres/pgvector hybrid (semantic + keyword) retrieval
+- GitHub repo ingestion (PAT or OAuth Device Flow), multi-repo bulk ingestion, README + structured project-profile extraction
+- Job description parsing, hybrid requirement matching, strongest-story ranking, weak-area detection, likely questions, STAR story drafts
 - Live session loop: question detection (debounced, noise-filtered) → grounded streaming answer
 - Configurable response modes (direct / talking points / follow-up)
+- Web research (Tavily), gated to only current-info questions
 
-Not yet built: web research is wired but untested live (needs a Tavily
-API key), and OAuth-based GitHub connect (a personal access token works
-today; the Device Flow code path exists but isn't the primary UI yet).
+Known gaps: the live interviewer-channel transcription accuracy in same-room speaker+mic test setups has noise (see the hero screenshot above) — real usage with headphones avoids the acoustic cross-talk that causes it. The OAuth Device Flow connect UI exists but a personal access token is the primary path today.
 
 ## Project structure
 
@@ -42,6 +126,9 @@ packages/
   search/     Web research provider abstraction
   interview/  Live session orchestrator (question detection + answer loop)
   transcription/  Speech-to-text client (Groq Whisper)
+docs/
+  screenshots/  Real screenshots used above
+  eval/         Evaluation harness, question sets, and results
 infra/
   docker-compose.yml   Local Postgres + pgvector
   schema.sql           Database schema
