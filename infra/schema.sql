@@ -58,3 +58,18 @@ CREATE INDEX IF NOT EXISTS knowledge_chunks_embedding_idx
 
 CREATE INDEX IF NOT EXISTS knowledge_chunks_source_id_idx ON knowledge_chunks (source_id);
 CREATE INDEX IF NOT EXISTS knowledge_chunks_tags_idx ON knowledge_chunks USING gin (tags);
+
+-- Full-text search signal for hybrid retrieval (packages/knowledge/src/
+-- retrieve.ts fuses this with cosine similarity via Reciprocal Rank
+-- Fusion). Postgres's ts_rank_cd isn't true BM25, but it's the standard
+-- practical stand-in when there's no dedicated search engine, and it's
+-- exactly the failure mode semantic-only retrieval misses: a short,
+-- specific term (a project name, an acronym) that embedding similarity
+-- scores weakly because there's too little surrounding context to place
+-- it, but that a literal text match finds immediately. GENERATED STORED so
+-- it's precomputed at write time, not recalculated on every search.
+ALTER TABLE knowledge_chunks ADD COLUMN IF NOT EXISTS content_tsv tsvector
+  GENERATED ALWAYS AS (to_tsvector('english', content)) STORED;
+
+CREATE INDEX IF NOT EXISTS knowledge_chunks_content_tsv_idx
+  ON knowledge_chunks USING gin (content_tsv);

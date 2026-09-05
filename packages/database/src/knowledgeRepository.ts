@@ -184,6 +184,70 @@ export async function searchKnowledgeChunks(
   }));
 }
 
+/**
+ * Full-text search over stored chunks via Postgres's built-in text search
+ * (websearch_to_tsquery + ts_rank_cd against the content_tsv generated
+ * column) — the keyword/BM25-like half of hybrid retrieval. Complements
+ * cosine similarity search, which is a weak signal for specific short
+ * terms (project names, acronyms) that don't carry much embedding weight
+ * on their own. websearch_to_tsquery tolerates arbitrary natural-language
+ * input (unlike plainto_tsquery/to_tsquery, it won't throw on stray
+ * punctuation) and simply matches nothing if the query has no meaningful
+ * terms left after stopword removal.
+ */
+export async function fullTextSearchKnowledgeChunks(
+  query: string,
+  options: SearchOptions = {},
+): Promise<RetrievedChunk[]> {
+  const pool = getPool();
+  const limit = options.limit ?? 8;
+
+  const params: unknown[] = [query];
+  let sourceTypeFilter = "";
+  if (options.sourceTypes?.length) {
+    params.push(options.sourceTypes);
+    sourceTypeFilter = `AND s.source_type = ANY($${params.length})`;
+  }
+  params.push(limit);
+
+  const { rows } = await pool.query<{
+    id: string;
+    source_id: string;
+    content: string;
+    source_type: KnowledgeSourceType;
+    source_name: string;
+    project: string | null;
+    repository: string | null;
+    tags: string[];
+    metadata: Record<string, unknown>;
+    rank: number;
+  }>(
+    `SELECT c.id, c.source_id, c.content, s.source_type, s.source_name,
+            c.project, c.repository, c.tags, c.metadata,
+            ts_rank_cd(c.content_tsv, websearch_to_tsquery('english', $1)) AS rank
+     FROM knowledge_chunks c
+     JOIN knowledge_sources s ON s.id = c.source_id
+     WHERE c.content_tsv @@ websearch_to_tsquery('english', $1) ${sourceTypeFilter}
+     ORDER BY rank DESC
+     LIMIT $${params.length}`,
+    params,
+  );
+
+  return rows.map((row) => ({
+    id: row.id,
+    sourceId: row.source_id,
+    content: row.content,
+    sourceType: row.source_type,
+    sourceName: row.source_name,
+    project: row.project ?? undefined,
+    repository: row.repository ?? undefined,
+    tags: row.tags,
+    metadata: row.metadata,
+    embedding: [],
+    score: row.rank,
+  }));
+}
+
 /** Escapes regex metacharacters so a keyword is matched literally, not interpreted as a pattern. */
 function escapeRegex(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");

@@ -6,7 +6,7 @@ import type { EvidenceItem, RetrievedChunk } from "@interview-copilot/shared";
  * from being distracted by noise (and, per the "never fabricate experience"
  * rule, weak matches shouldn't be presented as if they support a claim).
  */
-const MIN_USEFUL_SCORE = 0.3;
+export const MIN_USEFUL_SCORE = 0.3;
 /** Above this, treat the match as strong enough to call "direct" evidence rather than merely "inferred". */
 const DIRECT_EVIDENCE_SCORE = 0.5;
 

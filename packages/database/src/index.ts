@@ -3,6 +3,7 @@ export {
   upsertKnowledgeSourceWithChunks,
   searchKnowledgeChunks,
   keywordSearchKnowledgeChunks,
+  fullTextSearchKnowledgeChunks,
   listKnowledgeSources,
   deleteKnowledgeSource,
 } from "./knowledgeRepository.js";

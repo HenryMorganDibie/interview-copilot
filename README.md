@@ -89,14 +89,16 @@ node docs/eval/run-eval.mjs docs/eval/eval-set.json docs/eval/detection-set.json
 
 | Metric | Result |
 |---|---:|
-| Question detection accuracy | 100% (2026-09-05 re-run, post latency fix) |
-| Retrieval hit rate (known-source questions) | 88.9% (2026-09-05 re-run) |
+| Question detection accuracy | 91.7%–100% (2026-09-05 re-runs) |
+| Retrieval hit rate (known-source questions) | 88.9% (hybrid semantic + BM25-like search, see below) |
 | No-evidence questions correctly declined (not fabricated) | 3/3 |
 | Web-research questions with zero misattributed personal sources | 2/2 (after fix) |
-| First-token latency (mean / median / P90) | 1.6s / 1.5s / 2.5s |
+| First-token latency (mean / median / P90) | 1.6s / 1.3s / 2.7s |
 | Full-answer latency (mean / median / P90) | 2.3s / 2.3s / 3.2s |
 
-These are the current numbers, re-run 2026-09-05 against the fixed live pipeline (see [below](#interviewer-audio-accuracy-and-latency)) — first-token latency now comfortably clears the sub-2s target. That same re-run also caught a real bug in the fix it was validating (the live router had no fallback left once Groq's free-tier rate limit was hit); see [`docs/eval/RESULTS.md`](docs/eval/RESULTS.md#2026-09-05-re-run-post-interviewer-audio-accuracy-and-latency-fix) for the full account, including why this is 2 passes rather than the original 3-pass methodology.
+Retrieval is hybrid since 2026-09-05: cosine similarity and Postgres full-text search run concurrently and get fused by Reciprocal Rank Fusion (`packages/knowledge/src/retrieve.ts`), catching cases plain embedding similarity misses (a chunk naming a specific project or acronym that doesn't carry much semantic weight on its own). An LLM-based rerank approach was tried first and measured head-to-head against this one — same 8/9 hit rate, but 2-3x the latency from the extra model call, so it was removed rather than shipped. The one recurring miss (a "MVNO Intelligence Hub" question) turned out not to be a retrieval problem at all once root-caused: the question analyzer's personal-vs-not classification is non-deterministic across calls, and when it misclassifies a personal question as non-personal, the evidence bar intentionally rises (see [grounding policy](#grounding-policy) point 5) — no retrieval improvement reaches a chunk excluded at that later gate. Full account, including the latency comparison numbers for both approaches: [`docs/eval/RESULTS.md`](docs/eval/RESULTS.md#2026-09-05-retrieval-upgrade--llm-rerank-vs-bm25rrf-hybrid-measured-head-to-head).
+
+First-token latency clears the sub-2s target since the 2026-09-05 live-router fix (see [below](#interviewer-audio-accuracy-and-latency)), which that same re-run caught a real regression in (the live router had no fallback left once Groq's free-tier rate limit was hit) — full account in [`docs/eval/RESULTS.md`](docs/eval/RESULTS.md#2026-09-05-re-run-post-interviewer-audio-accuracy-and-latency-fix).
 
 ## Interviewer-audio accuracy and latency
 
@@ -141,7 +143,7 @@ Actively in development. Working end-to-end, verified against the real running a
 - Desktop shell (Tauri + React + Tailwind + shadcn/ui), packaged as a real Windows installer (MSI/NSIS) that auto-starts Postgres and the API server on launch
 - Mic capture + native Windows (WASAPI) system-audio loopback capture, both transcribed via Groq Whisper
 - Provider-agnostic LLM router with automatic failover (benchmarked local Ollama pool → Groq → optional Anthropic)
-- Knowledge base: multi-file CV/document upload, chunking, local embeddings, Postgres/pgvector hybrid (semantic + keyword) retrieval
+- Knowledge base: multi-file CV/document upload, chunking, local embeddings, idempotent ingestion (re-ingesting the same source replaces it, not a duplicate), hybrid retrieval (cosine similarity + Postgres full-text search, fused via Reciprocal Rank Fusion) for interview answers, and separate word-boundary keyword matching for job-requirement matching
 - GitHub repo ingestion (OAuth Device Flow by default, zero setup — or a pasted personal access token), multi-repo bulk ingestion, README + structured project-profile extraction
 - Job description parsing, hybrid requirement matching, strongest-story ranking, weak-area detection, likely questions, STAR story drafts
 - Live session loop: question detection (debounced, noise-filtered) → grounded streaming answer
