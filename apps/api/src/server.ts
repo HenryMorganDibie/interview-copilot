@@ -1,4 +1,6 @@
 import "dotenv/config";
+import fs from "node:fs";
+import path from "node:path";
 import cors from "cors";
 import express from "express";
 import multer from "multer";
@@ -90,10 +92,18 @@ app.post("/api/transcribe", upload.single("audio"), async (req, res) => {
     const blob = new Blob([new Uint8Array(req.file.buffer)], { type: req.file.mimetype });
     const extension = req.file.mimetype.includes("wav") ? "wav" : "webm";
     const contextPrompt = typeof req.body?.contextPrompt === "string" ? req.body.contextPrompt : undefined;
+    if (process.env.DEBUG_SAVE_AUDIO) {
+      const dir = process.env.DEBUG_SAVE_AUDIO;
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, `chunk-${Date.now()}.${extension}`), req.file.buffer);
+    }
     const text = await transcribeAudioChunk(blob, `chunk.${extension}`, {
       apiKey: GROQ_API_KEY,
       contextPrompt,
     });
+    console.log(
+      `[transcribe] bytes=${req.file.buffer.length} contextPromptLen=${contextPrompt?.length ?? 0} -> "${text}"`,
+    );
     res.json({ text });
   } catch (error) {
     // Never crash the session because one transcription request failed (spec: graceful degradation).

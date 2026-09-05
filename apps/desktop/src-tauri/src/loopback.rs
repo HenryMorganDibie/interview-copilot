@@ -6,12 +6,39 @@ use std::time::Duration;
 
 use wasapi::*;
 
-const POLL_INTERVAL: Duration = Duration::from_millis(50);
-/// Shared-mode buffer for polling. Deliberately generous (200ms), not the
-/// minimum device period (~3ms) — a buffer that small is narrower than
-/// typical OS thread-scheduling jitter, so a polling thread reliably misses
-/// every window and sees 0 frames forever. Confirmed by testing.
-const BUFFER_DURATION_HNS: i64 = 2_000_000;
+// Raises the process-wide timer resolution so Sleep() calls (including the
+// poll loop below) actually honor short durations instead of being
+// coalesced to a coarser OS-chosen granularity. Standard practice for
+// real-time audio/video apps on Windows. Didn't turn out to be the fix for
+// the throughput bug documented on BUFFER_DURATION_HNS below (measured no
+// change), but costs nothing and is worth keeping as insurance on hardware
+// where coalescing genuinely is a factor. Must be paired with
+// timeEndPeriod at the same resolution when done, or the OS keeps the
+// system-wide high-resolution timer active indefinitely.
+#[link(name = "winmm")]
+extern "system" {
+    fn timeBeginPeriod(uPeriod: u32) -> u32;
+    fn timeEndPeriod(uPeriod: u32) -> u32;
+}
+const TIMER_RESOLUTION_MS: u32 = 1;
+
+const POLL_INTERVAL: Duration = Duration::from_millis(10);
+/// A 200ms buffer here (paired with a 50ms poll interval) measured a real,
+/// severe bug: `read_from_device_to_deque` delivered only ~1/5 of the
+/// expected byte rate (76800 B/s instead of the correct 384000 B/s for this
+/// device's 48kHz/stereo/float32 format), silently dropping ~80% of the
+/// audio before this capture thread ever saw it — the actual root cause of
+/// interviewer speech coming through unrecognizable, not a VAD/model
+/// problem. Shrinking the buffer to 40ms with a 10ms poll interval restored
+/// real-time throughput (measured ~365000 B/s, within noise of correct).
+/// The exact mechanism (why a larger shared-mode buffer caused data loss
+/// instead of just added latency) wasn't root-caused further — this value
+/// is empirically verified correct on this hardware, not derived from
+/// WASAPI documentation. If loopback audio ever sounds thin/dropped again
+/// on different hardware, set LOOPBACK_VAD_DEBUG=1 and check
+/// `[loopback-read] bytes_read_last_report` against
+/// `sample_rate * blockalign` before assuming it's a VAD/model issue again.
+const BUFFER_DURATION_HNS: i64 = 400_000;
 
 /// Simple energy-based voice activity detection so speech segments end at
 /// natural pauses instead of an arbitrary fixed-duration boundary. Fixed
@@ -52,6 +79,22 @@ pub fn run_loopback_capture(
     stop_flag: Arc<AtomicBool>,
     mut on_chunk: impl FnMut(Vec<u8>),
 ) -> Result<(), String> {
+    // SAFETY: timeBeginPeriod/timeEndPeriod is a plain winmm.dll call with
+    // no preconditions beyond matching the begin/end resolution, which the
+    // guard below guarantees even on early return via `?`.
+    unsafe {
+        timeBeginPeriod(TIMER_RESOLUTION_MS);
+    }
+    struct TimerResolutionGuard;
+    impl Drop for TimerResolutionGuard {
+        fn drop(&mut self) {
+            unsafe {
+                timeEndPeriod(TIMER_RESOLUTION_MS);
+            }
+        }
+    }
+    let _timer_guard = TimerResolutionGuard;
+
     let keepalive_stop = stop_flag.clone();
     let keepalive_handle = thread::spawn(move || {
         if let Err(e) = run_silence_keepalive(keepalive_stop) {
@@ -128,17 +171,60 @@ fn run_loopback_capture_inner(
     let max_segment_bytes = blockalign as usize * (sample_rate as f32 * MAX_SEGMENT_SECS) as usize;
     let min_segment_bytes = blockalign as usize * (sample_rate as f32 * MIN_SEGMENT_SECS) as usize;
 
+    // Temporary calibration aid: SILENCE_RMS_THRESHOLD was a guess, and this
+    // codebase has been burned before by guessed thresholds that didn't
+    // match real measured values (see MATCH_SCORE_THRESHOLD's history).
+    // With LOOPBACK_VAD_DEBUG=1 set, print a running min/max RMS window
+    // every ~1s so the real threshold can be measured from actual hardware
+    // instead of assumed.
+    let vad_debug = std::env::var("LOOPBACK_VAD_DEBUG").is_ok();
+    let mut debug_min = f32::MAX;
+    let mut debug_max = 0f32;
+    let mut debug_frames = 0u32;
+    let debug_start = std::time::Instant::now();
+    let mut debug_last_report = std::time::Instant::now();
+    let mut debug_bytes_since_report = 0u64;
+
     audio_client.start_stream().map_err(|e| e.to_string())?;
 
     while !stop_flag.load(Ordering::Relaxed) {
+        let before_len = sample_queue.len();
         capture_client
             .read_from_device_to_deque(&mut sample_queue)
             .map_err(|e| e.to_string())?;
+        let newly_read = sample_queue.len().saturating_sub(before_len);
+        if vad_debug {
+            debug_bytes_since_report += newly_read as u64;
+            if debug_last_report.elapsed().as_millis() >= 1000 {
+                log::info!(
+                    "[loopback-read] wall_elapsed_total={:.1}s bytes_read_last_report={} over {:.2}s",
+                    debug_start.elapsed().as_secs_f32(),
+                    debug_bytes_since_report,
+                    debug_last_report.elapsed().as_secs_f32()
+                );
+                debug_bytes_since_report = 0;
+                debug_last_report = std::time::Instant::now();
+            }
+        }
 
         while sample_queue.len() >= vad_frame_bytes {
             let frame: Vec<u8> = sample_queue.drain(..vad_frame_bytes).collect();
             let rms = compute_rms_f32(&frame, channels as usize);
             let is_speech = rms >= SILENCE_RMS_THRESHOLD;
+
+            if vad_debug {
+                debug_min = debug_min.min(rms);
+                debug_max = debug_max.max(rms);
+                debug_frames += 1;
+                if debug_frames >= (1000 / VAD_FRAME_MS) as u32 {
+                    log::info!(
+                        "[loopback-vad] rms min={debug_min:.6} max={debug_max:.6} threshold={SILENCE_RMS_THRESHOLD:.6}"
+                    );
+                    debug_min = f32::MAX;
+                    debug_max = 0f32;
+                    debug_frames = 0;
+                }
+            }
 
             if is_speech {
                 silence_ms_run = 0;

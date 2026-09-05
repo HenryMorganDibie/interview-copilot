@@ -15,6 +15,13 @@ export default defineConfig(() => ({
   server: {
     port: 1420,
     strictPort: true,
+    // Without this, Vite's watcher picks up src-tauri/target (Cargo's build
+    // output) and crashes with EBUSY when cargo rewrites a DLL mid-build —
+    // observed directly on a fresh `tauri dev` build. These are Rust build
+    // artifacts, never frontend source, so excluding them is always correct.
+    watch: {
+      ignored: ["**/src-tauri/target/**"],
+    },
   },
   // Env variables prefixed with VITE_ are exposed to the frontend.
   // Never prefix secrets (API keys) with VITE_.
