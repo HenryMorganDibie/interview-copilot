@@ -7,7 +7,7 @@ Interview Copilot is a local-first AI system for **interview preparation and sim
 [![Download for Windows](https://img.shields.io/badge/Download-Windows-0078D6?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/HenryMorganDibie/interview-copilot/releases/latest)
 [![Download for macOS (beta)](https://img.shields.io/badge/Download-macOS_(beta)-000000?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/HenryMorganDibie/interview-copilot/releases/latest)
 
-Windows is the fully-verified platform (see the rest of this README for what's actually been tested). The macOS build is Apple Silicon only, mic-only (no interviewer-audio capture yet), and hasn't been run on real Mac hardware — see [Platform support](#platform-support) before relying on it.
+Windows is the fully-verified platform (see the rest of this README for what's actually been tested). The macOS build is Apple Silicon only, mic-only (no interviewer-audio capture yet), and hasn't been run on real Mac hardware — see [Platform support](#platform-support) before relying on it. **Downloading the installer alone isn't enough yet** — the backend still needs to be run from a real clone of this repo; see the callout in [Setup](#setup).
 
 ![Demo: knowledge base, job description matching, and a live interview answer](docs/screenshots/demo.gif)
 
@@ -24,7 +24,7 @@ flowchart TD
     subgraph Backend["Local API (Node/Express, 127.0.0.1 only)"]
         Whisper["Groq Whisper\ntranscription"]
         Detect["Question detection\n(debounced, LLM-classified)"]
-        Retrieve["Evidence retrieval\n(pgvector cosine + keyword)"]
+        Retrieve["Evidence retrieval\n(pgvector cosine + full-text, RRF-fused)"]
         Router["LLM Router\nOllama -> Groq -> Anthropic(opt)"]
         Web["Web research\n(Tavily, only if requiresWebResearch)"]
     end
@@ -130,17 +130,36 @@ This is a **single-user, local-first desktop tool**, not a multi-tenant service:
 
 ## Platform support
 
-**Windows** is the primary, fully-verified platform — the interviewer-audio capture path (`apps/desktop/src-tauri/src/loopback.rs`) is native Rust against WASAPI, Windows' own audio API. That's a deliberate choice (it's what let this project catch and fix the real capture/latency bugs documented [below](#interviewer-audio-accuracy-and-latency) at the OS-audio level, not a black box), but it means system-audio capture is Windows-specific.
+| | Windows | macOS (Apple Silicon) | Linux |
+|---|---|---|---|
+| Status | ✅ Supported, fully verified | 🟡 Beta, mic-only | ❌ Not attempted |
+| Interviewer/system-audio capture | Yes (native WASAPI) | No | No |
+| Mic capture, knowledge base, retrieval, LLM router, GitHub ingestion, job matching | Yes | Yes | — |
+| Backend auto-start on launch | Yes | No — start Postgres + `apps/api` manually | — |
+| Installer | `.msi` / NSIS `.exe` | `.dmg` (arm64 only, unsigned) | — |
 
-**macOS (Apple Silicon) has a beta build on the [releases page](https://github.com/HenryMorganDibie/interview-copilot/releases/latest) — mic-only, unverified on real hardware.** Everything with no OS dependency (knowledge base, retrieval, LLM router, GitHub ingestion, job matching, the live session loop) is plain TypeScript/React and works the same as on Windows; `wasapi`/`hound` are gated to Windows-only Cargo dependencies (`Cargo.toml`) and `loopback.rs` is swapped for a same-signature stub (`loopback_stub.rs`) so the Rust side actually compiles on macOS. The frontend already treats a failed system-audio start as non-fatal (mic-only fallback, same code path used if mic/system permissions are denied on Windows), so this didn't need any frontend changes. Built on a real `macos-latest` GitHub Actions runner (`.github/workflows/build-macos.yml`) since there's no Mac available to build or test on locally — a real Apple toolchain, not a cross-compile, but **not yet run through a real interview on real Mac hardware**, so treat it as best-effort. Known limits: arm64 only (no Intel build yet), unsigned (Gatekeeper will block first launch — right-click the app and choose Open, or `xattr -cr` it), and backend auto-start isn't implemented on macOS — start Postgres and `apps/api` yourself first.
+**Windows** is the primary, fully-verified platform — the interviewer-audio capture path (`apps/desktop/src-tauri/src/loopback.rs`) is native Rust against WASAPI, Windows' own audio API. That's a deliberate choice: it's what let this project catch and fix the real capture/latency bugs documented [below](#interviewer-audio-accuracy-and-latency) at the OS-audio level, not a black box. The tradeoff is that system-audio capture is Windows-specific.
 
-Linux isn't attempted at all yet. The path there is the same shape as macOS: PipeWire/PulseAudio monitor sources behind the same `SystemAudioCaptureProvider` interface, and it would need its own CI build the same way. A contribution implementing either the Linux backend or real macOS hardware verification is welcome.
+**macOS (Apple Silicon)** has a beta build on the [releases page](https://github.com/HenryMorganDibie/interview-copilot/releases/latest):
+
+- Everything with no OS dependency — knowledge base, retrieval, LLM router, GitHub ingestion, job matching, the live session loop — is plain TypeScript/React and works the same as on Windows.
+- `wasapi`/`hound` are gated to Windows-only Cargo dependencies (`Cargo.toml`), and `loopback.rs` is swapped for a same-signature stub (`loopback_stub.rs`) so the Rust side actually compiles on macOS.
+- The frontend already treats a failed system-audio start as non-fatal (mic-only fallback — the same code path used if mic/system permissions are denied on Windows), so this didn't need any frontend changes.
+- Built on a real `macos-latest` GitHub Actions runner (`.github/workflows/build-macos.yml`) since there's no Mac available to build or test on locally — a real Apple toolchain, not a cross-compile.
+- **Not yet run through a real interview on real Mac hardware** — treat it as best-effort, not verified.
+- Known limits: Apple Silicon only (no Intel build), unsigned (Gatekeeper blocks first launch — right-click the app and choose Open, or run `xattr -cr` on it), and backend auto-start isn't implemented (start Postgres and `apps/api` yourself first).
+
+**Which build should you use?** Prefer Windows if you want full interviewer-audio capture and the most polished, verified experience. Use the macOS beta only if you're on Apple Silicon and are fine with mic-only capture plus starting the backend manually.
+
+**Linux** isn't attempted at all yet — the path there is the same shape as macOS (PipeWire/PulseAudio monitor sources behind the same `SystemAudioCaptureProvider` interface), and it would need its own CI build the same way.
+
+Contributions implementing the Linux backend, or verifying the macOS build on real hardware, are very welcome.
 
 ## Status
 
 Actively in development. Working end-to-end, verified against the real running app (not just typechecked):
 
-- Desktop shell (Tauri + React + Tailwind + shadcn/ui), packaged as a real Windows installer (MSI/NSIS) that auto-starts Postgres and the API server on launch
+- Desktop shell (Tauri + React + Tailwind + shadcn/ui), packaged as a real Windows installer (MSI/NSIS)
 - Mic capture + native Windows (WASAPI) system-audio loopback capture, both transcribed via Groq Whisper
 - Provider-agnostic LLM router with automatic failover (benchmarked local Ollama pool → Groq → optional Anthropic)
 - Knowledge base: multi-file CV/document upload, chunking, local embeddings, idempotent ingestion (re-ingesting the same source replaces it, not a duplicate), hybrid retrieval (cosine similarity + Postgres full-text search, fused via Reciprocal Rank Fusion) for interview answers, and separate word-boundary keyword matching for job-requirement matching
@@ -150,7 +169,7 @@ Actively in development. Working end-to-end, verified against the real running a
 - Configurable response modes (direct / talking points / follow-up), each visible in the Session Setup page so it's clear what you're choosing
 - Web research (Tavily), gated to only current-info questions
 
-Known gaps: same-room speaker+mic test rigs still add acoustic cross-talk that headphones avoid entirely — that's a physical setup issue, not something software fixes. Windows is the only fully-verified platform; the macOS beta build is mic-only and untested on real hardware, and Linux isn't attempted — see [Platform support](#platform-support).
+Known gaps: same-room speaker+mic test rigs still add acoustic cross-talk that headphones avoid entirely — that's a physical setup issue, not something software fixes. Windows is the only fully-verified platform; the macOS beta build is mic-only and untested on real hardware, and Linux isn't attempted — see [Platform support](#platform-support). **The installers are not yet fully self-contained** — see the callout in [Setup](#setup).
 
 ## Project structure
 
@@ -176,6 +195,8 @@ infra/
 ```
 
 ## Setup
+
+**If you downloaded a release installer**: the app currently still needs the backend run from a real clone of this repo (below) — the installer bundles the desktop UI, not the API server or database. On the original dev machine the installed app auto-starts both because `backend.rs` shells out to a hardcoded local path; on any other machine that auto-start silently fails and the app opens to a UI with nothing behind it (knowledge base, retrieval, everything). This is a known, real gap, not yet fixed — closing it means bundling the API as a standalone sidecar binary and replacing (or embedding) Postgres/pgvector with something that ships inside the installer, tracked as follow-up work, not shipped in this release.
 
 Requirements: Node 22+, Rust (for the Tauri/WASAPI native module), Docker
 Desktop, and [Ollama](https://ollama.com) running locally.
