@@ -21,15 +21,28 @@ export type DefaultRouterConfig = {
   anthropicApiKey?: string;
   anthropicModel?: string;
   /**
-   * Set false to skip the local Ollama pool entirely. On CPU-only/low-RAM
-   * machines a cold local-model load can take several seconds before the
-   * router gives up and fails over (measured: this dominated the P90/max
-   * tail in docs/eval/RESULTS.md) — unacceptable for a live interview
-   * answer, where the candidate is visibly waiting. Use `false` for
-   * latency-critical live-session calls and leave it `true` (default) for
-   * prep-time generation, where the free local model is worth the wait.
+   * `true` (default): local pool tried first. `false`: skip it entirely.
+   * `"last"`: skip it for the common case but keep it as a final fallback
+   * after every remote candidate has failed.
+   *
+   * On CPU-only/low-RAM machines a cold local-model load can take several
+   * seconds before the router gives up and fails over (measured: this
+   * dominated the P90/max tail in docs/eval/RESULTS.md) — unacceptable for
+   * a live interview answer, where the candidate is visibly waiting. But a
+   * live-session router with `false` and no local pool at all has no
+   * fallback left once its remote candidates are exhausted (Groq's free
+   * tier is 8K TPM — a burst of rapid live questions can trip it, and
+   * gpt-oss-120b/20b share that ceiling), and silently degrades to
+   * "Unable to generate answer." for the rest of the rate-limit window —
+   * confirmed live via docs/eval/run-eval.mjs on 2026-09-05, where 12/17
+   * answer-eval questions returned confidence 0 once Groq's TPM budget was
+   * exhausted partway through the run. Use `"last"` for latency-critical
+   * live-session calls instead of `false`: same fast path in the common
+   * case, but a real (slower) grounded answer instead of a hard failure
+   * when the fast tier is genuinely down. Leave it `true` (default) for
+   * prep-time generation, where the free local model is worth trying first.
    */
-  includeLocalPool?: boolean;
+  includeLocalPool?: boolean | "last";
 };
 
 /**
@@ -42,14 +55,14 @@ export type DefaultRouterConfig = {
  */
 export function createDefaultRouter(config: DefaultRouterConfig = {}): ProviderRouter {
   const candidates: LLMProvider[] = [];
+  const buildLocalPool = () =>
+    new LocalModelPool(config.localModels, {
+      baseUrl: config.ollamaBaseUrl,
+      minQualityScore: config.minLocalQualityScore,
+    });
 
-  if (config.includeLocalPool !== false) {
-    candidates.push(
-      new LocalModelPool(config.localModels, {
-        baseUrl: config.ollamaBaseUrl,
-        minQualityScore: config.minLocalQualityScore,
-      }),
-    );
+  if (config.includeLocalPool !== false && config.includeLocalPool !== "last") {
+    candidates.push(buildLocalPool());
   }
 
   if (config.groqApiKey) {
@@ -63,6 +76,10 @@ export function createDefaultRouter(config: DefaultRouterConfig = {}): ProviderR
     candidates.push(
       new AnthropicProvider({ apiKey: config.anthropicApiKey, model: config.anthropicModel }),
     );
+  }
+
+  if (config.includeLocalPool === "last") {
+    candidates.push(buildLocalPool());
   }
 
   return new ProviderRouter(candidates);

@@ -38,7 +38,15 @@ import type {
 const PORT = Number(process.env.API_PORT ?? 8722);
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
-const GITHUB_CLIENT_ID = process.env.GITHUB_CLIENT_ID;
+// A registered, public OAuth App client ID — not a secret. GitHub's device
+// flow needs no client secret (see packages/github/src/deviceFlow.ts), so
+// this can be embedded the same way `gh`/other public CLIs embed their own
+// client ID, making Device Flow a genuine zero-config default instead of
+// something every cloner has to register their own OAuth App for. Anyone
+// who wants to authorize against their own App instead can still override
+// via GITHUB_CLIENT_ID in .env.
+const DEFAULT_GITHUB_CLIENT_ID = "Ov23lijfTMvkFixHJ77R";
+const GITHUB_CLIENT_ID = process.env.GITHUB_CLIENT_ID || DEFAULT_GITHUB_CLIENT_ID;
 const searchProvider = createDefaultSearchProvider(process.env.WEB_SEARCH_API_KEY);
 // A directly-issued personal access token is simpler than full OAuth for a
 // single-user desktop tool — no OAuth App registration needed. Device flow
@@ -54,13 +62,19 @@ const router = createDefaultRouter({
   anthropicApiKey: ANTHROPIC_API_KEY,
 });
 // Live-session answer generation and question analysis skip the local pool
-// entirely — the candidate is watching this happen in real time, and a
-// cold local-model load (the dominant tail latency in docs/eval/RESULTS.md)
-// is exactly the "obviously waiting" experience that must not happen live.
+// for the common case — the candidate is watching this happen in real time,
+// and a cold local-model load (the dominant tail latency in
+// docs/eval/RESULTS.md) is exactly the "obviously waiting" experience that
+// must not happen live. But the local pool stays wired in as a last resort
+// (`"last"`, not `false`): confirmed live 2026-09-05 that Groq's 8K TPM free
+// tier can be exhausted by a burst of rapid live questions, and with no
+// fallback at all this silently returned "Unable to generate answer." for
+// every question until the rate-limit window cleared — see
+// packages/ai/src/createDefaultRouter.ts for the full account.
 const liveRouter = createDefaultRouter({
   groqApiKey: GROQ_API_KEY,
   anthropicApiKey: ANTHROPIC_API_KEY,
-  includeLocalPool: false,
+  includeLocalPool: "last",
 });
 
 const app = express();
@@ -257,17 +271,37 @@ app.delete("/api/knowledge/sources/:id", async (req, res) => {
 });
 
 app.get("/api/github/status", async (_req, res) => {
+  // Device flow needs a registered GitHub OAuth App (GITHUB_CLIENT_ID) — a
+  // real barrier for anyone cloning this repo who isn't Henry. Reported here
+  // so the UI can fall back to a pasted personal access token instead of
+  // offering a "Connect GitHub" button that would just 503.
+  const deviceFlowAvailable = Boolean(GITHUB_CLIENT_ID);
   if (!githubToken) {
-    res.json({ connected: false });
+    res.json({ connected: false, deviceFlowAvailable });
     return;
   }
   const user = await getAuthenticatedUser(githubToken);
   if (!user) {
     // Token is set but no longer valid (revoked/expired) — don't keep claiming connected.
     githubToken = undefined;
-    res.json({ connected: false });
+    res.json({ connected: false, deviceFlowAvailable });
     return;
   }
+  res.json({ connected: true, username: user.login, deviceFlowAvailable });
+});
+
+app.post("/api/github/connect", async (req, res) => {
+  const token = req.body?.token as string | undefined;
+  if (!token?.trim()) {
+    res.status(400).json({ error: "Missing token in request body" });
+    return;
+  }
+  const user = await getAuthenticatedUser(token.trim());
+  if (!user) {
+    res.status(401).json({ error: "GitHub rejected that token — check it's valid and hasn't expired." });
+    return;
+  }
+  githubToken = token.trim();
   res.json({ connected: true, username: user.login });
 });
 
