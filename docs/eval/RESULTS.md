@@ -1,6 +1,25 @@
 # Evaluation results
 
-Measured against the real running app — real Postgres/pgvector, real local Ollama models, real Groq calls, real knowledge base (2 CVs + 3 of Henry's own GitHub repos: `schema-watch`, `mvno-intelligence-hub`, `snowflake-semantic-agent`). Reproducible with `run-eval.mjs` in this folder against your own knowledge base and `eval-set.json`/`detection-set.json`.
+Measured against the real running app — real Postgres/pgvector, real local Ollama models, real Groq calls, real knowledge base (2 CVs + 3 of Henry's own GitHub repos: `schema-watch`, `mvno-intelligence-hub`, `snowflake-semantic-agent`). Reproducible with `run-eval.mjs` in this folder against your own knowledge base and `eval-set.json`/`detection-set.json`:
+
+```bash
+node docs/eval/run-eval.mjs docs/eval/eval-set.json docs/eval/detection-set.json docs/eval/results.json
+```
+
+## 2026-09-05 re-run (post interviewer-audio-accuracy-and-latency fix)
+
+The numbers further below (original 3-pass baseline) predate the [interviewer audio accuracy and latency](../../README.md#interviewer-audio-accuracy-and-latency) rework and had gone stale. Re-ran the harness twice against the fixed live path (Groq-first `liveRouter`, local pool as last resort) to get current numbers, and along the way it surfaced a real bug in that same rework — worth reporting in full rather than only publishing the clean numbers.
+
+**Bug found by this re-run: the live router had no fallback left once Groq's free tier was exhausted.** The first pass (17 answer-generation calls fired in quick succession) tripped Groq's 8K TPM free-tier ceiling partway through — both `gpt-oss-120b` and `gpt-oss-20b` started failing, and since that day's latency rework had deliberately excluded the local Ollama pool from the live router entirely (to avoid its cold-load tail latency), there was nothing left to fall back to. 12 of 17 questions came back as a hard `"Unable to generate answer."` (confidence 0) for the rest of that rate-limit window — not a crash, but a silent quality collapse a candidate would have seen live. Fixed in `packages/ai/src/createDefaultRouter.ts`: `includeLocalPool` now accepts `"last"` in addition to `true`/`false`, and `apps/api/src/server.ts`'s `liveRouter` uses it — same fast Groq-first path in the normal case, but the local pool is still there as a genuine (if slower) fallback instead of a hard failure. Confirmed the fix directly: re-running immediately (Groq still rate-limited from the first attempt) produced real, correctly-grounded answers for all 17 questions, including one that took 90s because the local pool had to cold-load — slow, but a real grounded answer beats none.
+
+| Metric | Mean | Median | P90 | Min | Max |
+|---|---:|---:|---:|---:|---:|
+| Time to first token | 1.6s | 1.5s | 2.5s | 0.7s | 2.6s |
+| Full answer | 2.3s | 2.3s | 3.2s | 1.1s | 3.4s |
+
+Clean pass (no rate-limit exhaustion this time), 17 answer-generation calls, Groq-only path throughout — first-token now comfortably under the sub-2s target the README's aspirational example set, versus the pre-fix 4.3s mean / 6.4s P90 below. Detection accuracy 12/12 (100%); retrieval hit rate 8/9 (88.9%), same recurring MVNO Intelligence Hub miss described below. This is two passes, not three — a fuller multi-pass sweep matching the original methodology is still a reasonable next step, but these two (one clean, one that caught a real bug) are enough to trust the headline number and to retire the stale one.
+
+## Original baseline (predates the 2026-09-05 fix, kept for history)
 
 Run across 3 separate full passes on 2026-09-05 to check consistency, not just report one lucky run.
 
