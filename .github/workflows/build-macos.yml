@@ -1,0 +1,44 @@
+name: Build macOS (manual)
+
+# Manually-triggered macOS build. This app's system-audio (interviewer)
+# capture is native Rust against WASAPI (Windows-only, see loopback.rs /
+# loopback_stub.rs) -- this build has that capture path stubbed out on
+# macOS, so it's mic-only. Everything else (knowledge base, GitHub
+# ingestion, job matching, the LLM router, live session with mic capture)
+# is plain TypeScript/React with no OS dependency and works the same way.
+#
+# Runs on a GitHub-hosted macos-latest runner because there's no Mac
+# available to build or test on directly -- this is a real Apple-toolchain
+# build (not a cross-compile), but hasn't been run through a real
+# interview on real macOS hardware. Treat it as untested/best-effort until
+# someone confirms it on real hardware.
+on:
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build desktop app (macOS)
+        run: npx tauri build
+        working-directory: apps/desktop
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: interview-copilot-macos
+          path: |
+            apps/desktop/src-tauri/target/release/bundle/dmg/*.dmg
+            apps/desktop/src-tauri/target/release/bundle/macos/*.app
+          if-no-files-found: error

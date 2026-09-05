@@ -23,6 +23,7 @@ impl Default for BackendHandle {
 /// commands first. Best-effort: failures here just mean the app falls
 /// back to needing those commands run manually, same as before — this
 /// never blocks the window from showing.
+#[cfg(target_os = "windows")]
 pub fn start_backend() -> Option<u32> {
     let compose_path = format!("{REPO_ROOT}\\infra\\docker-compose.yml");
     let compose_result = Command::new("cmd")
@@ -53,8 +54,29 @@ pub fn start_backend() -> Option<u32> {
 /// Kills the API server's whole process tree (cmd.exe -> npx -> node) —
 /// killing just the cmd.exe PID leaves the actual node process running on
 /// Windows, since process.kill() doesn't recurse into children.
+#[cfg(target_os = "windows")]
 pub fn stop_backend(pid: u32) {
     let _ = Command::new("taskkill")
         .args(["/F", "/T", "/PID", &pid.to_string()])
         .output();
 }
+
+/// Non-Windows builds don't auto-start the backend at all yet — the
+/// Windows path above is hardcoded to a dev-machine repo path and shells
+/// out to `cmd`/`taskkill`, neither of which exist elsewhere. Rather than
+/// let those calls fail one by one after a real delay (the Windows version
+/// sleeps 20s waiting for Docker Desktop before giving up), this returns
+/// immediately: run `docker compose -f infra/docker-compose.yml up -d` and
+/// `npm run dev --workspace=apps/api` yourself before opening the app. See
+/// the README's Platform Support section.
+#[cfg(not(target_os = "windows"))]
+pub fn start_backend() -> Option<u32> {
+    log::warn!(
+        "[backend] auto-start isn't implemented on this platform yet — start Postgres and \
+         apps/api manually (see the README's Setup section)."
+    );
+    None
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn stop_backend(_pid: u32) {}

@@ -1,6 +1,17 @@
 pub mod backend;
-pub mod loopback;
 pub mod loopback_commands;
+
+// System-audio (interviewer) capture is native Rust against WASAPI, which
+// only exists on Windows. Non-Windows builds compile a stub with the same
+// `run_loopback_capture` signature instead (see loopback_stub.rs) so the
+// crate builds cross-platform; `loopback_commands.rs` calls it unchanged
+// either way, and the frontend already treats a failure to start it as
+// non-fatal (mic-only fallback). See the README's Platform Support section.
+#[cfg(target_os = "windows")]
+pub mod loopback;
+#[cfg(not(target_os = "windows"))]
+#[path = "loopback_stub.rs"]
+pub mod loopback;
 
 use backend::{start_backend, stop_backend, BackendHandle};
 use loopback_commands::{start_loopback_capture, stop_loopback_capture, LoopbackState};
