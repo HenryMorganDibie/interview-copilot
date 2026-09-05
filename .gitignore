@@ -3,6 +3,15 @@ dist/
 build/
 target/
 src-tauri/target/
+# Built sidecar binary (scripts/build-api-sidecar.mjs) -- large (~95MB,
+# embeds a full Node runtime) and rebuilt automatically before `tauri build`.
+apps/desktop/src-tauri/binaries/
+# Local SQLite database (packages/database) -- created automatically, holds
+# real personal CV/interview data, never meant to be committed.
+apps/api/data/
+*.db
+*.db-shm
+*.db-wal
 .env
 .env.local
 *.log

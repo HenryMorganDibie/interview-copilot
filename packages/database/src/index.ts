@@ -1,4 +1,4 @@
-export { getPool } from "./pool.js";
+export { getDb } from "./db.js";
 export {
   upsertKnowledgeSourceWithChunks,
   searchKnowledgeChunks,
