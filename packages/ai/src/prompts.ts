@@ -43,10 +43,17 @@ Do not repeat the answer text inside the JSON. "confidence" reflects how well th
 export function buildAnswerUserPrompt(context: AnswerGenerationContext): string {
   const { question, analysis, interviewContext, evidence, webResearch, responseMode } = context;
 
-  const recentQA = interviewContext.previousQuestions
-    .slice(-3)
+  // Both arrays must be sliced the same way before pairing by index — the
+  // orchestrator's own window (RECENT_QA_LIMIT) can be wider than the 3 we
+  // want here, and indexing an unsliced previousAnswers by a sliced
+  // previousQuestions' index silently pairs each question with the wrong
+  // answer (e.g. the oldest 3 answers instead of the 3 that actually go
+  // with the last 3 questions) once more than 3 Q&A pairs have accumulated.
+  const recentQuestions = interviewContext.previousQuestions.slice(-3);
+  const recentAnswers = interviewContext.previousAnswers.slice(-3);
+  const recentQA = recentQuestions
     .map((q, i) => {
-      const answer = interviewContext.previousAnswers[i];
+      const answer = recentAnswers[i];
       return `Q: ${q.text}\nA: ${answer?.answer ?? "(no answer recorded)"}`;
     })
     .join("\n\n");
