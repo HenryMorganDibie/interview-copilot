@@ -20,3 +20,28 @@ export function setResponseMode(mode: ResponseMode): void {
     // Non-fatal: the mode just won't persist across restarts.
   }
 }
+
+const JOB_DESCRIPTION_KEY = "interview-copilot:job-description";
+
+/**
+ * The job description pasted on the Job Descriptions page, persisted so a
+ * live session started later in the same setup flow can ground answers
+ * against the actual role/company instead of generic evidence — without
+ * this, `LiveSessionOrchestrator.jobDescription` was always undefined
+ * because the analyzed text lived only in that page's component state.
+ */
+export function getJobDescription(): string {
+  try {
+    return localStorage.getItem(JOB_DESCRIPTION_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+export function setJobDescription(text: string): void {
+  try {
+    localStorage.setItem(JOB_DESCRIPTION_KEY, text);
+  } catch {
+    // Non-fatal: just won't persist across restarts.
+  }
+}

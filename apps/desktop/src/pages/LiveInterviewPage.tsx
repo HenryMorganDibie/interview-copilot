@@ -8,7 +8,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { MicCaptureProvider } from "@/lib/micCapture";
 import { SystemAudioCaptureProvider } from "@/lib/systemAudioCapture";
 import { analyzeQuestion, generateAnswerStream } from "@/lib/apiClient";
-import { getResponseMode } from "@/lib/settings";
+import { getResponseMode, getJobDescription } from "@/lib/settings";
 
 type SessionState = "idle" | "listening" | "mic-error";
 
@@ -46,9 +46,12 @@ export function LiveInterviewPage() {
     setAnswerText("");
     setAnswer(null);
 
+    const jobDescription = getJobDescription() || undefined;
+
     const orchestrator = new LiveSessionOrchestrator({
       sessionId: crypto.randomUUID(),
       responseMode: getResponseMode(),
+      jobDescription,
       analyzeQuestion,
       generateAnswer: generateAnswerStream,
       onTranscript: (event) => setTranscript((prev) => [...prev, event]),
@@ -74,7 +77,7 @@ export function LiveInterviewPage() {
 
     const mic = new MicCaptureProvider();
     mic.onTranscript(onEvent);
-    const system = new SystemAudioCaptureProvider();
+    const system = new SystemAudioCaptureProvider(jobDescription);
     system.onTranscript(onEvent);
 
     const started: SpeechToTextProvider[] = [];

@@ -8,7 +8,6 @@ use tauri::{AppHandle, Emitter, State};
 
 use crate::loopback::run_loopback_capture;
 
-const CHUNK_SECONDS: f32 = 4.0;
 const EVENT_NAME: &str = "loopback-audio-chunk";
 
 #[derive(Default)]
@@ -38,7 +37,7 @@ pub fn start_loopback_capture(app: AppHandle, state: State<LoopbackState>) -> Re
     let thread_stop_flag = stop_flag.clone();
 
     let join_handle = std::thread::spawn(move || {
-        let result = run_loopback_capture(thread_stop_flag, CHUNK_SECONDS, |wav_bytes| {
+        let result = run_loopback_capture(thread_stop_flag, |wav_bytes| {
             let data_base64 = base64::engine::general_purpose::STANDARD.encode(&wav_bytes);
             if let Err(e) = app.emit(EVENT_NAME, AudioChunkPayload { data_base64 }) {
                 log::warn!("[loopback] failed to emit audio chunk event: {e}");

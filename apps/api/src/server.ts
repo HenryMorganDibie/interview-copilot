@@ -44,9 +44,21 @@ const searchProvider = createDefaultSearchProvider(process.env.WEB_SEARCH_API_KE
 // wanted instead; both end up populating the same in-memory token.
 let githubToken: string | undefined = process.env.GITHUB_TOKEN;
 
+// Prep-time work (likely questions, STAR stories) isn't latency-sensitive,
+// so it's worth trying the free local model first even though a cold load
+// costs a few seconds.
 const router = createDefaultRouter({
   groqApiKey: GROQ_API_KEY,
   anthropicApiKey: ANTHROPIC_API_KEY,
+});
+// Live-session answer generation and question analysis skip the local pool
+// entirely — the candidate is watching this happen in real time, and a
+// cold local-model load (the dominant tail latency in docs/eval/RESULTS.md)
+// is exactly the "obviously waiting" experience that must not happen live.
+const liveRouter = createDefaultRouter({
+  groqApiKey: GROQ_API_KEY,
+  anthropicApiKey: ANTHROPIC_API_KEY,
+  includeLocalPool: false,
 });
 
 const app = express();
@@ -77,7 +89,11 @@ app.post("/api/transcribe", upload.single("audio"), async (req, res) => {
   try {
     const blob = new Blob([new Uint8Array(req.file.buffer)], { type: req.file.mimetype });
     const extension = req.file.mimetype.includes("wav") ? "wav" : "webm";
-    const text = await transcribeAudioChunk(blob, `chunk.${extension}`, { apiKey: GROQ_API_KEY });
+    const contextPrompt = typeof req.body?.contextPrompt === "string" ? req.body.contextPrompt : undefined;
+    const text = await transcribeAudioChunk(blob, `chunk.${extension}`, {
+      apiKey: GROQ_API_KEY,
+      contextPrompt,
+    });
     res.json({ text });
   } catch (error) {
     // Never crash the session because one transcription request failed (spec: graceful degradation).
@@ -112,35 +128,40 @@ app.post("/api/answer", async (req, res) => {
   // counts as usable evidence (chunksToEvidence's `strict` mode), so a
   // borderline/spurious match can't attach a misleading source, but a
   // strong match still comes through even if the analyzer guessed wrong.
-  try {
-    const retrieved = await retrieveRelevantChunks(context.question);
-    context.evidence = chunksToEvidence(retrieved, context.analysis.requiresPersonalExperience === false);
-  } catch (error) {
-    console.error("evidence retrieval failed:", error);
-    context.evidence = [];
-  }
+  // Evidence retrieval and web research are independent of each other, so
+  // they run concurrently rather than back-to-back — on a live-session
+  // question needing both, that halves the wait for whichever is slower
+  // instead of paying the sum of both.
+  const evidencePromise = retrieveRelevantChunks(context.question)
+    .then((retrieved) => chunksToEvidence(retrieved, context.analysis.requiresPersonalExperience === false))
+    .catch((error) => {
+      console.error("evidence retrieval failed:", error);
+      return [];
+    });
 
   // Only search the web when the question actually needs current/external
   // info (per the question analyzer's requiresWebResearch flag) — not on
   // every question, and never in place of personal evidence. Unavailable
   // (no key configured, or the search itself fails) degrades to no web
   // context rather than failing the answer.
-  if (context.analysis.requiresWebResearch) {
-    if (searchProvider) {
-      try {
-        const results = await searchProvider.search(context.question);
-        context.webResearch = formatWebResearch(results);
-      } catch (error) {
-        console.error("web search failed:", error);
-        context.webResearch = "Web research unavailable.";
-      }
-    } else {
-      context.webResearch = "Web research unavailable.";
-    }
-  }
+  const webResearchPromise = context.analysis.requiresWebResearch
+    ? searchProvider
+      ? searchProvider
+          .search(context.question)
+          .then((results) => formatWebResearch(results))
+          .catch((error) => {
+            console.error("web search failed:", error);
+            return "Web research unavailable.";
+          })
+      : Promise.resolve("Web research unavailable.")
+    : Promise.resolve(undefined);
+
+  const [evidence, webResearch] = await Promise.all([evidencePromise, webResearchPromise]);
+  context.evidence = evidence;
+  context.webResearch = webResearch;
 
   try {
-    const result = await router.generateAnswer(context, (chunk) => {
+    const result = await liveRouter.generateAnswer(context, (chunk) => {
       if (chunk.delta) {
         res.write(`event: delta\ndata: ${JSON.stringify({ text: chunk.delta })}\n\n`);
       }
@@ -162,7 +183,7 @@ app.post("/api/analyze-question", async (req, res) => {
   }
 
   try {
-    const analysis = await router.analyzeQuestion(context);
+    const analysis = await liveRouter.analyzeQuestion(context);
     res.json(analysis);
   } catch (error) {
     console.error("question analysis failed:", error);

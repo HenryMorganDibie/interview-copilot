@@ -13,7 +13,16 @@ export type LiveSessionOrchestratorOptions = {
   jobDescription?: string;
   /** The user's configured preference for how answers are delivered. Default "direct". */
   responseMode?: ResponseMode;
-  /** How long to wait after the interviewer stops talking before treating it as a finished turn. Default 2000ms. */
+  /**
+   * How long to wait after the interviewer stops talking before treating it
+   * as a finished turn. Default 900ms. Kept short deliberately: the
+   * interviewer-audio capture itself now segments on natural pauses (~450ms
+   * of silence, see loopback.rs), so a transcript event arriving here
+   * already corresponds to the end of an utterance most of the time — this
+   * debounce only needs to cover the case where the interviewer pauses
+   * mid-question before continuing, not re-absorb a whole extra chunking
+   * delay on top of it.
+   */
   silenceMs?: number;
   /** Below this confidence (or type "unknown"), a "question" is treated as noise/hallucination and skipped. Default 0.35. */
   minConfidence?: number;
@@ -58,7 +67,7 @@ export class LiveSessionOrchestrator {
 
   constructor(opts: LiveSessionOrchestratorOptions) {
     this.opts = opts;
-    this.silenceMs = opts.silenceMs ?? 2000;
+    this.silenceMs = opts.silenceMs ?? 900;
     this.minConfidence = opts.minConfidence ?? 0.35;
   }
 

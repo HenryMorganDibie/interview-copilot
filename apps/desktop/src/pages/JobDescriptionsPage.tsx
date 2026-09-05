@@ -5,12 +5,21 @@ import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { analyzeJobDescription, type JobMatchReport } from "@/lib/apiClient";
+import { getJobDescription, setJobDescription } from "@/lib/settings";
 
 export function JobDescriptionsPage() {
-  const [text, setText] = useState("");
+  const [text, setText] = useState(() => getJobDescription());
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [report, setReport] = useState<JobMatchReport | null>(null);
+
+  const handleTextChange = useCallback((value: string) => {
+    setText(value);
+    // Persisted immediately (not just after "Analyze") so a live session
+    // started later this same setup can ground answers on the role/company
+    // even if the candidate never clicked Analyze.
+    setJobDescription(value);
+  }, []);
 
   const handleAnalyze = useCallback(async () => {
     if (!text.trim()) return;
@@ -38,7 +47,7 @@ export function JobDescriptionsPage() {
           placeholder="Paste the job description here..."
           className="min-h-48"
           value={text}
-          onChange={(e) => setText(e.target.value)}
+          onChange={(e) => handleTextChange(e.target.value)}
           disabled={loading}
         />
         <Button onClick={handleAnalyze} disabled={loading || !text.trim()}>

@@ -13,11 +13,32 @@ const POLL_INTERVAL: Duration = Duration::from_millis(50);
 /// every window and sees 0 frames forever. Confirmed by testing.
 const BUFFER_DURATION_HNS: i64 = 2_000_000;
 
+/// Simple energy-based voice activity detection so speech segments end at
+/// natural pauses instead of an arbitrary fixed-duration boundary. Fixed
+/// windows were cutting words mid-syllable (hurting Whisper accuracy) and
+/// forcing every segment to wait out the full window even when the speaker
+/// had already stopped talking (hurting latency) — both were the same root
+/// cause. RMS threshold on 32-bit float PCM; not a learned VAD model, but
+/// sufficient to detect a genuine pause vs. mid-sentence breath.
+const SILENCE_RMS_THRESHOLD: f32 = 0.006;
+/// How long a sustained silence must last before a segment is flushed. Long
+/// enough to survive natural mid-sentence pauses/breaths, short enough that
+/// the candidate isn't kept waiting once the interviewer actually stops.
+const SILENCE_HANG_MS: u64 = 450;
+/// Segments are flushed at this length regardless of silence, so a run-on
+/// sentence with no pause doesn't withhold transcription indefinitely.
+const MAX_SEGMENT_SECS: f32 = 12.0;
+/// Below this, a "segment" is almost certainly noise/silence bleed, not
+/// speech — don't bother sending it to Whisper.
+const MIN_SEGMENT_SECS: f32 = 0.35;
+/// Analysis frame size for RMS/silence detection.
+const VAD_FRAME_MS: u64 = 20;
+
 /// Captures system loopback audio (what's playing through the default
 /// output device — e.g. the interviewer's voice over a video call) and
-/// invokes `on_chunk` with WAV-encoded bytes roughly every `chunk_seconds`
-/// of audio, until `stop_flag` is set. Blocking — call from a dedicated
-/// thread, not the async runtime.
+/// invokes `on_chunk` with WAV-encoded bytes for each detected speech
+/// segment (silence-terminated, not a fixed clock), until `stop_flag` is
+/// set. Blocking — call from a dedicated thread, not the async runtime.
 ///
 /// Internally also runs a silent-render keepalive stream for as long as
 /// capture runs: WASAPI's audio engine can go idle when nothing is
@@ -29,7 +50,6 @@ const BUFFER_DURATION_HNS: i64 = 2_000_000;
 /// something the wasapi crate or Microsoft's docs call out explicitly.
 pub fn run_loopback_capture(
     stop_flag: Arc<AtomicBool>,
-    chunk_seconds: f32,
     mut on_chunk: impl FnMut(Vec<u8>),
 ) -> Result<(), String> {
     let keepalive_stop = stop_flag.clone();
@@ -39,7 +59,7 @@ pub fn run_loopback_capture(
         }
     });
 
-    let result = run_loopback_capture_inner(stop_flag, chunk_seconds, &mut on_chunk);
+    let result = run_loopback_capture_inner(stop_flag, &mut on_chunk);
 
     let _ = keepalive_handle.join();
     result
@@ -47,7 +67,6 @@ pub fn run_loopback_capture(
 
 fn run_loopback_capture_inner(
     stop_flag: Arc<AtomicBool>,
-    chunk_seconds: f32,
     on_chunk: &mut impl FnMut(Vec<u8>),
 ) -> Result<(), String> {
     initialize_mta()
@@ -99,9 +118,15 @@ fn run_loopback_capture_inner(
         .get_audiocaptureclient()
         .map_err(|e| format!("get_audiocaptureclient failed: {e}"))?;
 
-    let chunk_frames = (sample_rate as f32 * chunk_seconds) as usize;
-    let chunk_bytes = blockalign as usize * chunk_frames;
-    let mut sample_queue: VecDeque<u8> = VecDeque::with_capacity(chunk_bytes * 4);
+    let vad_frame_frames = ((sample_rate as u64 * VAD_FRAME_MS) / 1000) as usize;
+    let vad_frame_bytes = blockalign as usize * vad_frame_frames;
+    let mut sample_queue: VecDeque<u8> = VecDeque::with_capacity(vad_frame_bytes * 8);
+
+    let mut segment: Vec<u8> = Vec::new();
+    let mut silence_ms_run: u64 = 0;
+    let mut has_had_speech = false;
+    let max_segment_bytes = blockalign as usize * (sample_rate as f32 * MAX_SEGMENT_SECS) as usize;
+    let min_segment_bytes = blockalign as usize * (sample_rate as f32 * MIN_SEGMENT_SECS) as usize;
 
     audio_client.start_stream().map_err(|e| e.to_string())?;
 
@@ -110,16 +135,77 @@ fn run_loopback_capture_inner(
             .read_from_device_to_deque(&mut sample_queue)
             .map_err(|e| e.to_string())?;
 
-        while sample_queue.len() >= chunk_bytes {
-            let raw: Vec<u8> = sample_queue.drain(..chunk_bytes).collect();
-            on_chunk(encode_wav_f32(&raw, sample_rate, channels, bits));
+        while sample_queue.len() >= vad_frame_bytes {
+            let frame: Vec<u8> = sample_queue.drain(..vad_frame_bytes).collect();
+            let rms = compute_rms_f32(&frame, channels as usize);
+            let is_speech = rms >= SILENCE_RMS_THRESHOLD;
+
+            if is_speech {
+                silence_ms_run = 0;
+                has_had_speech = true;
+                segment.extend_from_slice(&frame);
+            } else if has_had_speech {
+                // Keep a little trailing silence in the segment (natural
+                // cadence) rather than clipping the instant speech stops.
+                segment.extend_from_slice(&frame);
+                silence_ms_run += VAD_FRAME_MS;
+            }
+            // Silence before any speech has started this segment: drop it,
+            // don't waste buffer/latency on dead air.
+
+            let should_flush = has_had_speech
+                && (silence_ms_run >= SILENCE_HANG_MS || segment.len() >= max_segment_bytes);
+
+            if should_flush {
+                if segment.len() >= min_segment_bytes {
+                    on_chunk(encode_wav_f32(&segment, sample_rate, channels, bits));
+                }
+                segment.clear();
+                silence_ms_run = 0;
+                has_had_speech = false;
+            }
         }
 
         thread::sleep(POLL_INTERVAL);
     }
 
+    // Flush whatever's left (e.g. stop was requested mid-utterance).
+    if has_had_speech && segment.len() >= min_segment_bytes {
+        on_chunk(encode_wav_f32(&segment, sample_rate, channels, bits));
+    }
+
     let _ = audio_client.stop_stream();
     Ok(())
+}
+
+/// Root-mean-square of interleaved 32-bit float PCM, used as a cheap
+/// speech/silence discriminator. Not a learned VAD model, but effective
+/// enough to find real pauses between spoken phrases.
+fn compute_rms_f32(bytes: &[u8], channels: usize) -> f32 {
+    let mut sum_sq = 0f64;
+    let mut count = 0usize;
+    for chunk in bytes.chunks_exact(4 * channels.max(1)) {
+        // Average across channels so a signal panned to one side still counts.
+        let mut frame_sum = 0f32;
+        for c in 0..channels.max(1) {
+            let offset = c * 4;
+            if offset + 4 <= chunk.len() {
+                frame_sum += f32::from_le_bytes([
+                    chunk[offset],
+                    chunk[offset + 1],
+                    chunk[offset + 2],
+                    chunk[offset + 3],
+                ]);
+            }
+        }
+        let sample = frame_sum / channels.max(1) as f32;
+        sum_sq += (sample as f64) * (sample as f64);
+        count += 1;
+    }
+    if count == 0 {
+        return 0.0;
+    }
+    ((sum_sq / count as f64).sqrt()) as f32
 }
 
 /// Renders continuous silence to the default output device to keep

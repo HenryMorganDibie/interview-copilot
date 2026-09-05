@@ -24,10 +24,11 @@ export class ApiUnavailableError extends Error {
   }
 }
 
-export async function transcribeChunk(audio: Blob): Promise<string> {
+export async function transcribeChunk(audio: Blob, contextPrompt?: string): Promise<string> {
   const extension = audio.type.includes("wav") ? "wav" : "webm";
   const form = new FormData();
   form.append("audio", audio, `chunk.${extension}`);
+  if (contextPrompt) form.append("contextPrompt", contextPrompt);
 
   let res: Response;
   try {

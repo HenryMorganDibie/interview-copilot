@@ -4,7 +4,7 @@ A local-first, grounded AI system for **interview preparation and simulated inte
 
 ![Live interview screen, mid-answer](docs/screenshots/live-interview.png)
 
-*Live session: the interviewer's question ("MVNO Intelligence Hub" — garbled here by same-room speaker→mic transcription noise, a known characteristic of this specific test rig, see [evaluation notes](docs/eval/RESULTS.md)) came through unrecognizable, and the model correctly declined to answer rather than guessing. That refusal is the grounding policy working as designed, not a failure — see below.*
+*Live session: a real answer to "Tell me about the MVNO Intelligence Hub project," grounded in the candidate's own CV and repo, with sources attached. An earlier version of this screenshot showed the interviewer's audio garbled beyond recognition — that was a real bug in fixed-duration chunking and a speed-tuned transcription model, not a feature; see [below](#interviewer-audio-accuracy-and-latency) for what changed.*
 
 ```mermaid
 flowchart TD
@@ -84,7 +84,21 @@ Measured against the real running app (not fabricated numbers) — see [`docs/ev
 | First-token latency (mean / median / P90) | 4.3s / 3.5s / 6.4s |
 | Full-answer latency (mean / median / P90) | 6.0s / 5.8s / 9.5s |
 
-Latency is slower than the sub-2s aspiration — this is a CPU-only, 8GB-RAM machine, and the tail is dominated by the local Ollama pool attempting a local model before failing over to Groq. Reported honestly rather than tuned to look better; see the eval doc for why.
+The table above is the last full 3-run harness pass and predates the fixes described directly below — a fresh full pass with the new pipeline hasn't been run yet, so treat the numbers as the "before" baseline, not current behavior.
+
+## Interviewer-audio accuracy and latency
+
+The transcription/latency numbers above motivated a real rework, not just tuning:
+
+- **Segmentation**: interviewer audio was chunked on a fixed 4-second clock, which sliced words at arbitrary boundaries (hurting accuracy) and forced every segment to wait out the full 4s even when the interviewer had already stopped talking (hurting latency). It's now voice-activity-segmented — `apps/desktop/src-tauri/src/loopback.rs` tracks RMS energy per 20ms frame and flushes a segment ~450ms after real speech stops, so a chunk is sent the moment there's a natural pause, not on a clock.
+- **Transcription model**: switched from `whisper-large-v3-turbo` to `whisper-large-v3` (Groq) — the turbo variant trades accuracy for speed, and domain jargon/project names were exactly what it lost. A rolling context window of the session's own recent transcript is also passed as Whisper's `prompt` field, so a project name transcribed correctly once biases later segments toward getting it right again.
+- **Live-path routing**: `/api/answer` and `/api/analyze-question` now use a Groq-only router with no local-model attempt (`includeLocalPool: false` in `createDefaultRouter`) — the local Ollama pool's cold-load time was the dominant tail latency in the table above, which is acceptable for prep-time generation (still local-first, to stay free) but not for a candidate visibly waiting on a live answer. Evidence retrieval and web research also now run concurrently instead of sequentially when a question needs both.
+- **Grounding on the actual role**: the job description pasted on the Job Descriptions page is now persisted (`apps/desktop/src/lib/settings.ts`) and threaded into the live session's question analysis, answer generation, and transcription context — previously it lived only in that page's component state and never reached a live session at all.
+- **Off-topic questions**: the answer prompt now explicitly requires the model to give the most useful honest answer available (reasoning from general knowledge, or the closest adjacent thing the evidence does support) rather than a bare "I don't have experience with that," so a tangential question still gets something substantive rather than a dead end.
+
+Manual spot-check after these changes: the same live-answer path that measured 6.0s mean / 9.5s P90 full-answer latency in the table above now completes in ~1.9–2.0s on repeat calls (first call ~5.7s, cold). Not yet re-run through the full 3-pass harness — that's the next thing to do before updating the table itself.
+
+No transcription pipeline is 100% accurate for every accent/audio path (Meet, Zoom, Teams, WhatsApp all encode differently, and real speakers vary far more than a clean test clip) — what changed here is architectural, not a guarantee. If a specific phrase still comes through wrong in a real session, the fix is almost always feeding more of that vocabulary into the rolling context (job description, company name, project names) rather than a model change.
 
 ## Security & scope
 
@@ -109,7 +123,7 @@ Actively in development. Working end-to-end, verified against the real running a
 - Configurable response modes (direct / talking points / follow-up)
 - Web research (Tavily), gated to only current-info questions
 
-Known gaps: the live interviewer-channel transcription accuracy in same-room speaker+mic test setups has noise (see the hero screenshot above) — real usage with headphones avoids the acoustic cross-talk that causes it. The OAuth Device Flow connect UI exists but a personal access token is the primary path today.
+Known gaps: the live-pipeline latency/accuracy numbers in [Evaluation](#evaluation) predate the fixes in [Interviewer audio accuracy and latency](#interviewer-audio-accuracy-and-latency) and need a fresh harness run. Same-room speaker+mic test rigs still add acoustic cross-talk that headphones avoid entirely — that's a physical setup issue, not something software fixes. The OAuth Device Flow connect UI exists but a personal access token is the primary path today.
 
 ## Project structure
 

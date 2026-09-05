@@ -20,6 +20,16 @@ export type DefaultRouterConfig = {
   groqModels?: string[];
   anthropicApiKey?: string;
   anthropicModel?: string;
+  /**
+   * Set false to skip the local Ollama pool entirely. On CPU-only/low-RAM
+   * machines a cold local-model load can take several seconds before the
+   * router gives up and fails over (measured: this dominated the P90/max
+   * tail in docs/eval/RESULTS.md) — unacceptable for a live interview
+   * answer, where the candidate is visibly waiting. Use `false` for
+   * latency-critical live-session calls and leave it `true` (default) for
+   * prep-time generation, where the free local model is worth the wait.
+   */
+  includeLocalPool?: boolean;
 };
 
 /**
@@ -31,12 +41,16 @@ export type DefaultRouterConfig = {
  * by default.
  */
 export function createDefaultRouter(config: DefaultRouterConfig = {}): ProviderRouter {
-  const candidates: LLMProvider[] = [
-    new LocalModelPool(config.localModels, {
-      baseUrl: config.ollamaBaseUrl,
-      minQualityScore: config.minLocalQualityScore,
-    }),
-  ];
+  const candidates: LLMProvider[] = [];
+
+  if (config.includeLocalPool !== false) {
+    candidates.push(
+      new LocalModelPool(config.localModels, {
+        baseUrl: config.ollamaBaseUrl,
+        minQualityScore: config.minLocalQualityScore,
+      }),
+    );
+  }
 
   if (config.groqApiKey) {
     const models = config.groqModels ?? ["openai/gpt-oss-120b", "openai/gpt-oss-20b"];

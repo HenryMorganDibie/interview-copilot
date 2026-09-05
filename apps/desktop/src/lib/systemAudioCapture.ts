@@ -27,6 +27,19 @@ function base64ToBlob(base64: string, mimeType: string): Blob {
 export class SystemAudioCaptureProvider implements SpeechToTextProvider {
   private unlisten: UnlistenFn | null = null;
   private callback: ((event: TranscriptEvent) => void) | null = null;
+  /**
+   * Seeded with job-description/company/role terms so proper nouns and
+   * jargon are recognized correctly from the first segment, then rolled
+   * forward with the interviewer's own recent words — Whisper's "prompt"
+   * field biases decoding toward vocabulary it's already seen, which
+   * matters a lot for acronyms and project names that plain acoustic
+   * matching tends to mangle (e.g. "MVNO", "SFTP").
+   */
+  private rollingContext = "";
+
+  constructor(seedContext?: string) {
+    if (seedContext) this.rollingContext = seedContext.slice(-800);
+  }
 
   onTranscript(callback: (event: TranscriptEvent) => void): void {
     this.callback = callback;
@@ -56,8 +69,10 @@ export class SystemAudioCaptureProvider implements SpeechToTextProvider {
 
   private async handleChunk(payload: AudioChunkPayload): Promise<void> {
     const blob = base64ToBlob(payload.data_base64, "audio/wav");
-    const text = await transcribeChunk(blob);
+    const text = await transcribeChunk(blob, this.rollingContext);
     if (!text.trim()) return;
+
+    this.rollingContext = `${this.rollingContext} ${text.trim()}`.slice(-800);
 
     this.callback?.({
       id: crypto.randomUUID(),
