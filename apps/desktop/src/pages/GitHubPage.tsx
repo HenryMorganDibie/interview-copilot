@@ -4,7 +4,9 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
 import {
+  connectGitHubWithToken,
   getGitHubStatus,
   ingestGitHubRepo,
   listGitHubRepos,
@@ -20,16 +22,20 @@ export function GitHubPage() {
   const [state, setState] = useState<ConnectState>("checking");
   const [username, setUsername] = useState<string | null>(null);
   const [deviceInfo, setDeviceInfo] = useState<DeviceCodeResponse | null>(null);
+  const [deviceFlowAvailable, setDeviceFlowAvailable] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [repos, setRepos] = useState<GitHubRepo[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [ingesting, setIngesting] = useState<string | null>(null);
   const [ingested, setIngested] = useState<Set<string>>(new Set());
   const [bulkProgress, setBulkProgress] = useState<{ done: number; total: number } | null>(null);
+  const [tokenInput, setTokenInput] = useState("");
+  const [connectingWithToken, setConnectingWithToken] = useState(false);
   const pollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const refreshStatus = useCallback(async () => {
     const status = await getGitHubStatus();
+    setDeviceFlowAvailable(status.deviceFlowAvailable ?? false);
     if (status.connected) {
       setState("connected");
       setUsername(status.username ?? null);
@@ -80,6 +86,21 @@ export function GitHubPage() {
       setState("error");
     }
   }, [refreshStatus]);
+
+  const handleConnectWithToken = useCallback(async () => {
+    if (!tokenInput.trim()) return;
+    setError(null);
+    setConnectingWithToken(true);
+    try {
+      await connectGitHubWithToken(tokenInput.trim());
+      setTokenInput("");
+      await refreshStatus();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to connect with that token");
+    } finally {
+      setConnectingWithToken(false);
+    }
+  }, [tokenInput, refreshStatus]);
 
   const handleIngest = useCallback(async (repo: GitHubRepo) => {
     setIngesting(repo.fullName);
@@ -219,9 +240,37 @@ export function GitHubPage() {
               ) : (
                 <>
                   <p className="text-sm text-muted-foreground">Not connected.</p>
-                  <Button onClick={handleConnect} disabled={state === "connecting"}>
-                    {state === "connecting" ? "Starting..." : "Connect GitHub"}
-                  </Button>
+                  {deviceFlowAvailable ? (
+                    <Button onClick={handleConnect} disabled={state === "connecting"}>
+                      {state === "connecting" ? "Starting..." : "Connect GitHub"}
+                    </Button>
+                  ) : null}
+                  <div className="flex w-full max-w-sm flex-col gap-2 text-left">
+                    <p className="text-xs text-muted-foreground">
+                      {deviceFlowAvailable
+                        ? "Or paste a personal access token instead:"
+                        : "Paste a personal access token to connect (needs at least read access to repository contents & metadata):"}
+                    </p>
+                    <div className="flex gap-2">
+                      <Input
+                        type="password"
+                        placeholder="github_pat_..."
+                        value={tokenInput}
+                        onChange={(e) => setTokenInput(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") handleConnectWithToken();
+                        }}
+                      />
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={handleConnectWithToken}
+                        disabled={connectingWithToken || !tokenInput.trim()}
+                      >
+                        {connectingWithToken ? "Connecting..." : "Connect"}
+                      </Button>
+                    </div>
+                  </div>
                 </>
               )}
               {error ? <p className="text-xs text-destructive">{error}</p> : null}

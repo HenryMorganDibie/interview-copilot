@@ -174,7 +174,7 @@ export async function analyzeJobDescription(text: string): Promise<JobMatchRepor
   return res.json();
 }
 
-export type GitHubStatus = { connected: boolean; username?: string };
+export type GitHubStatus = { connected: boolean; username?: string; deviceFlowAvailable?: boolean };
 
 export async function getGitHubStatus(): Promise<GitHubStatus> {
   try {
@@ -184,6 +184,19 @@ export async function getGitHubStatus(): Promise<GitHubStatus> {
   } catch {
     return { connected: false };
   }
+}
+
+export async function connectGitHubWithToken(token: string): Promise<{ connected: true; username: string }> {
+  const res = await fetch(`${API_BASE_URL}/api/github/connect`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token }),
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(body.error ?? "Failed to connect with that token");
+  }
+  return res.json();
 }
 
 export type DeviceCodeResponse = {
