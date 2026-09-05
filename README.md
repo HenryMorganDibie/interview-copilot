@@ -2,6 +2,8 @@
 
 A local-first, grounded AI system for **interview preparation and simulated interview practice**: it listens to a mock or explicitly-permitted interview, detects when the interviewer has asked a real question, retrieves your strongest relevant evidence from your own CV and GitHub projects, and generates a concise answer grounded in what you've actually done — never fabricating experience you don't have.
 
+[![Download for Windows](https://img.shields.io/badge/Download-Windows-0078D6?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/HenryMorganDibie/interview-copilot/releases/latest)
+
 ![Live interview screen, mid-answer](docs/screenshots/live-interview.png)
 
 *Live session from a full 7-question mock-interview rehearsal (real interviewer questions, spoken aloud, for an actual role the candidate was preparing for): "Tell me about yourself" transcribed correctly, answered from real CV evidence. Three earlier versions of this screenshot showed the interviewer's audio garbled, hallucinated, or missing its first words entirely — real bugs, not a feature — see [below](#interviewer-audio-accuracy-and-latency) for the full account of what was actually wrong and how each was found.*
