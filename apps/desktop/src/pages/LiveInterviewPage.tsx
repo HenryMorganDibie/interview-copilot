@@ -1,14 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { ChevronDown } from "lucide-react";
 import type { InterviewAnswer, SpeechToTextProvider, TranscriptEvent } from "@interview-copilot/shared";
 import { LiveSessionOrchestrator } from "@interview-copilot/interview";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Separator } from "@/components/ui/separator";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { MicCaptureProvider } from "@/lib/micCapture";
 import { SystemAudioCaptureProvider } from "@/lib/systemAudioCapture";
 import { analyzeQuestion, generateAnswerStream } from "@/lib/apiClient";
 import { getResponseMode, getJobDescription } from "@/lib/settings";
+import { cn } from "@/lib/utils";
 
 type SessionState = "idle" | "listening" | "mic-error";
 
@@ -22,6 +24,7 @@ export function LiveInterviewPage() {
   const [state, setState] = useState<SessionState>("idle");
   const [transcript, setTranscript] = useState<TranscriptEvent[]>([]);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [detailsOpen, setDetailsOpen] = useState(false);
 
   const [currentQuestion, setCurrentQuestion] = useState<string | null>(null);
   const [answerText, setAnswerText] = useState("");
@@ -186,100 +189,117 @@ export function LiveInterviewPage() {
         </div>
       ) : null}
 
-      <div className="flex flex-1 flex-col gap-6 overflow-y-auto p-8">
-        <section>
-          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-            Question
-          </p>
-          <p className="mt-2 text-lg">
-            {currentQuestion ?? "Waiting for the interviewer to ask a question..."}
-          </p>
-        </section>
-
-        <Separator />
-
-        <section>
-          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-            Say this
-          </p>
-          {answerText || generating ? (
-            <p className="mt-2 whitespace-pre-line text-sm leading-relaxed">
-              {answerText}
-              {generating ? <span className="animate-pulse">▍</span> : null}
+      {/* The glance area: question + answer + key points, sized and spaced to
+          be readable at a glance while actually in an interview. Everything
+          else (evidence, raw transcript) lives behind Details below, not
+          competing for attention here. */}
+      <div className="flex flex-1 flex-col overflow-y-auto">
+        <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-8 px-8 py-10">
+          <section>
+            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+              Question
             </p>
-          ) : (
-            <p className="mt-2 text-sm text-muted-foreground">
-              Nothing to show yet. Start listening to begin.
+            <p className="mt-3 text-2xl font-semibold leading-snug">
+              {currentQuestion ?? (
+                <span className="text-muted-foreground">
+                  Waiting for the interviewer to ask a question...
+                </span>
+              )}
             </p>
-          )}
-        </section>
+          </section>
 
-        <Separator />
-
-        <section>
-          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-            Key points
-          </p>
-          {answer && answer.keyPoints.length > 0 ? (
-            <ul className="mt-2 list-inside list-disc space-y-1 text-sm">
-              {answer.keyPoints.map((point, i) => (
-                <li key={i}>{point}</li>
-              ))}
-            </ul>
-          ) : (
-            <p className="mt-2 text-sm text-muted-foreground">-</p>
-          )}
-        </section>
-
-        <Separator />
-
-        <section>
-          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-            Evidence
-          </p>
-          {answer && answer.sources.length > 0 ? (
-            <div className="mt-2 space-y-1">
-              {answer.sources.map((source, i) => (
-                <p key={i} className="text-sm">
-                  {source.sourceName}{" "}
-                  <span className="text-xs text-muted-foreground">
-                    (confidence: {source.confidence >= 0.6 ? "High" : source.confidence >= 0.35 ? "Medium" : "Low"})
-                  </span>
-                </p>
-              ))}
-            </div>
-          ) : (
-            <p className="mt-2 text-sm text-muted-foreground">-</p>
-          )}
-        </section>
-
-        <Separator />
-
-        <section>
-          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-            Transcript
-          </p>
-          <ScrollArea className="mt-2 h-40 rounded-md border border-border p-3">
-            {transcript.length === 0 ? (
-              <p className="text-sm text-muted-foreground">
-                Nothing captured yet. Both your microphone and system audio (the interviewer's
-                voice over a call) are transcribed once you start listening.
+          <section>
+            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+              Your answer
+            </p>
+            {answerText || generating ? (
+              <p className="mt-3 whitespace-pre-line text-xl leading-relaxed">
+                {answerText}
+                {generating ? <span className="animate-pulse">▍</span> : null}
               </p>
             ) : (
-              <ul className="space-y-2">
-                {transcript.map((event) => (
-                  <li key={event.id} className="text-sm">
-                    <span className="text-xs text-muted-foreground">
-                      {new Date(event.timestamp).toLocaleTimeString()}
-                    </span>{" "}
-                    <span className="font-medium">{SPEAKER_LABEL[event.speaker]}:</span>{" "}
-                    {event.text}
-                  </li>
-                ))}
-              </ul>
+              <p className="mt-3 text-lg text-muted-foreground">
+                Nothing to show yet. Start listening to begin.
+              </p>
             )}
-          </ScrollArea>
-        </section>
+
+            {answer && answer.keyPoints.length > 0 ? (
+              <div className="mt-4 flex flex-wrap gap-2">
+                {answer.keyPoints.map((point, i) => (
+                  <Badge key={i} variant="secondary" className="font-normal">
+                    {point}
+                  </Badge>
+                ))}
+              </div>
+            ) : null}
+          </section>
+        </div>
+
+        <div className="mx-auto w-full max-w-3xl px-8 pb-10">
+          <Collapsible open={detailsOpen} onOpenChange={setDetailsOpen}>
+            <CollapsibleTrigger asChild>
+              <Button variant="ghost" size="sm" className="gap-1.5 text-muted-foreground">
+                <ChevronDown
+                  className={cn("size-4 transition-transform", detailsOpen && "rotate-180")}
+                />
+                Details
+                {answer?.sources.length ? (
+                  <Badge variant="secondary" className="ml-1 font-normal">
+                    {answer.sources.length} source{answer.sources.length === 1 ? "" : "s"}
+                  </Badge>
+                ) : null}
+              </Button>
+            </CollapsibleTrigger>
+            <CollapsibleContent className="mt-4 space-y-6">
+              <section>
+                <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  Evidence
+                </p>
+                {answer && answer.sources.length > 0 ? (
+                  <div className="mt-2 space-y-1">
+                    {answer.sources.map((source, i) => (
+                      <p key={i} className="text-sm">
+                        {source.sourceName}{" "}
+                        <span className="text-xs text-muted-foreground">
+                          (confidence:{" "}
+                          {source.confidence >= 0.6 ? "High" : source.confidence >= 0.35 ? "Medium" : "Low"})
+                        </span>
+                      </p>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="mt-2 text-sm text-muted-foreground">-</p>
+                )}
+              </section>
+
+              <section>
+                <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  Transcript
+                </p>
+                <ScrollArea className="mt-2 h-40 rounded-md border border-border p-3">
+                  {transcript.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">
+                      Nothing captured yet. Both your microphone and system audio (the
+                      interviewer's voice over a call) are transcribed once you start listening.
+                    </p>
+                  ) : (
+                    <ul className="space-y-2">
+                      {transcript.map((event) => (
+                        <li key={event.id} className="text-sm">
+                          <span className="text-xs text-muted-foreground">
+                            {new Date(event.timestamp).toLocaleTimeString()}
+                          </span>{" "}
+                          <span className="font-medium">{SPEAKER_LABEL[event.speaker]}:</span>{" "}
+                          {event.text}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </ScrollArea>
+              </section>
+            </CollapsibleContent>
+          </Collapsible>
+        </div>
       </div>
     </div>
   );
