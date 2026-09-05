@@ -76,6 +76,21 @@ const liveRouter = createDefaultRouter({
   anthropicApiKey: ANTHROPIC_API_KEY,
   includeLocalPool: "last",
 });
+// Question analysis is a classification task (a few short JSON fields),
+// not a generation task -- it doesn't need the strongest model, so it
+// shouldn't pay for one. createDefaultRouter's default Groq order is
+// strongest-first (120b, then 20b) because that's the right call for
+// generateAnswer's actual output quality, but reusing that same order for
+// analyzeQuestion meant every live question paid 120b's slower latency for
+// a task 20b handles just as well. Measured live 2026-09-05: ~1.18s on the
+// default order; this exists to cut that specific cost, since analysis
+// sits fully in the silent gap before the candidate sees anything at all.
+const analysisRouter = createDefaultRouter({
+  groqApiKey: GROQ_API_KEY,
+  groqModels: ["openai/gpt-oss-20b", "openai/gpt-oss-120b"],
+  anthropicApiKey: ANTHROPIC_API_KEY,
+  includeLocalPool: "last",
+});
 
 const app = express();
 // This API only ever binds to 127.0.0.1 and is never exposed beyond this
@@ -219,7 +234,7 @@ app.post("/api/analyze-question", async (req, res) => {
   }
 
   try {
-    const analysis = await liveRouter.analyzeQuestion(context);
+    const analysis = await analysisRouter.analyzeQuestion(context);
     res.json(analysis);
   } catch (error) {
     console.error("question analysis failed:", error);
