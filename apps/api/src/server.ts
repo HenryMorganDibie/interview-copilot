@@ -1,4 +1,4 @@
-import "dotenv/config";
+import { config as loadDotenv } from "dotenv";
 import fs from "node:fs";
 import path from "node:path";
 import cors from "cors";
@@ -34,6 +34,12 @@ import type {
   InterviewContext,
   KnowledgeSourceType,
 } from "@interview-copilot/shared";
+
+// ENV_FILE_PATH lets the bundled sidecar binary point this at a real file
+// path (e.g. the Tauri app's config directory) regardless of the process's
+// working directory when Tauri spawns it. Falls back to dotenv's normal
+// CWD-relative ".env" lookup for local dev (npm run dev from apps/api).
+loadDotenv(process.env.ENV_FILE_PATH ? { path: process.env.ENV_FILE_PATH } : undefined);
 
 const PORT = Number(process.env.API_PORT ?? 8722);
 const GROQ_API_KEY = process.env.GROQ_API_KEY;

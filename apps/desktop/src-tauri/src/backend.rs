@@ -1,15 +1,9 @@
-use std::process::Command;
 use std::sync::Mutex;
+use tauri::{AppHandle, Manager};
+use tauri_plugin_shell::process::CommandChild;
+use tauri_plugin_shell::ShellExt;
 
-/// Hardcoded to this machine's repo location. The installed app isn't a
-/// fully self-contained package yet (the Node API server and Docker
-/// Postgres aren't bundled into the installer) — this lets the *installed*
-/// app auto-start both anyway, but only works on this machine. A real
-/// distributable build would need the API bundled as a sidecar binary and
-/// Postgres embedded (e.g. SQLite) instead of relying on a known dev path.
-const REPO_ROOT: &str = r"C:\KINGHENRYMORGAN_ANALYTICS\interview-copilot";
-
-pub struct BackendHandle(pub Mutex<Option<u32>>);
+pub struct BackendHandle(pub Mutex<Option<CommandChild>>);
 
 impl Default for BackendHandle {
     fn default() -> Self {
@@ -17,66 +11,64 @@ impl Default for BackendHandle {
     }
 }
 
-/// Starts Postgres (via `docker compose up -d`, idempotent — a no-op if
-/// already running) and the Node API server, so the installed app works
-/// the moment it's opened instead of requiring two manual terminal
-/// commands first. Best-effort: failures here just mean the app falls
-/// back to needing those commands run manually, same as before — this
-/// never blocks the window from showing.
+/// Starts the bundled API server as a Tauri sidecar (see
+/// scripts/build-api-sidecar.mjs -- a standalone executable with the
+/// Node runtime baked in, no separate Node install or node_modules
+/// needed). Runs on this machine's real app-data directory, not a
+/// hardcoded repo path, so this now works on any machine the installer
+/// runs on -- the previous version shelled out to `npx tsx` from a path
+/// only the original dev machine had.
+///
+/// The database (SQLite, see packages/database) needs no separate server
+/// or Docker -- it's just a file, created automatically on first launch
+/// inside the app's data directory.
+///
+/// Known gap: provider API keys (Groq, GitHub PAT, Tavily) still come
+/// from a `.env` file, now read from the app's config directory instead
+/// of a repo checkout -- but nothing creates that file for a first-time
+/// user who isn't the original developer. Until there's a real in-app
+/// settings UI for entering a Groq key, a fresh install has a working
+/// knowledge base/UI but no LLM-powered features unless the user places
+/// a `.env` there themselves or runs Ollama locally.
 #[cfg(target_os = "windows")]
-pub fn start_backend() -> Option<u32> {
-    let compose_path = format!("{REPO_ROOT}\\infra\\docker-compose.yml");
-    let compose_result = Command::new("cmd")
-        .args(["/C", "docker", "compose", "-f", &compose_path, "up", "-d"])
-        .output();
+pub fn start_backend(app: &AppHandle) -> Option<CommandChild> {
+    let app_data_dir = app.path().app_data_dir().ok()?;
+    let app_config_dir = app.path().app_config_dir().ok()?;
+    std::fs::create_dir_all(&app_data_dir).ok()?;
+    std::fs::create_dir_all(&app_config_dir).ok()?;
 
-    // Docker daemon likely isn't running at all — try launching Docker
-    // Desktop and give it a moment, then retry once.
-    if compose_result.is_err() || !compose_result.map(|o| o.status.success()).unwrap_or(false) {
-        let _ = Command::new("cmd")
-            .args(["/C", "start", "", r"C:\Program Files\Docker\Docker\Docker Desktop.exe"])
-            .output();
-        std::thread::sleep(std::time::Duration::from_secs(20));
-        let _ = Command::new("cmd")
-            .args(["/C", "docker", "compose", "-f", &compose_path, "up", "-d"])
-            .output();
-    }
+    let database_path = app_data_dir.join("interview-copilot.db");
+    let env_file_path = app_config_dir.join(".env");
 
-    let api_dir = format!("{REPO_ROOT}\\apps\\api");
-    Command::new("cmd")
-        .args(["/C", "npx", "tsx", "src/server.ts"])
-        .current_dir(&api_dir)
+    let (_rx, child) = app
+        .shell()
+        .sidecar("interview-copilot-api")
+        .ok()?
+        .env("DATABASE_PATH", database_path.to_string_lossy().to_string())
+        .env("ENV_FILE_PATH", env_file_path.to_string_lossy().to_string())
         .spawn()
-        .ok()
-        .map(|child| child.id())
+        .ok()?;
+
+    Some(child)
 }
 
-/// Kills the API server's whole process tree (cmd.exe -> npx -> node) —
-/// killing just the cmd.exe PID leaves the actual node process running on
-/// Windows, since process.kill() doesn't recurse into children.
 #[cfg(target_os = "windows")]
-pub fn stop_backend(pid: u32) {
-    let _ = Command::new("taskkill")
-        .args(["/F", "/T", "/PID", &pid.to_string()])
-        .output();
+pub fn stop_backend(child: CommandChild) {
+    let _ = child.kill();
 }
 
-/// Non-Windows builds don't auto-start the backend at all yet — the
-/// Windows path above is hardcoded to a dev-machine repo path and shells
-/// out to `cmd`/`taskkill`, neither of which exist elsewhere. Rather than
-/// let those calls fail one by one after a real delay (the Windows version
-/// sleeps 20s waiting for Docker Desktop before giving up), this returns
-/// immediately: run `docker compose -f infra/docker-compose.yml up -d` and
-/// `npm run dev --workspace=apps/api` yourself before opening the app. See
-/// the README's Platform Support section.
+/// Non-Windows builds don't auto-start the backend at all yet -- the
+/// bundled sidecar binary is only built for Windows today (see
+/// scripts/build-api-sidecar.mjs). Start apps/api manually (see the
+/// README's Setup section).
 #[cfg(not(target_os = "windows"))]
-pub fn start_backend() -> Option<u32> {
+pub fn start_backend(_app: &AppHandle) -> Option<CommandChild> {
     log::warn!(
-        "[backend] auto-start isn't implemented on this platform yet — start Postgres and \
-         apps/api manually (see the README's Setup section)."
+        "[backend] sidecar auto-start isn't implemented on this platform yet -- start apps/api \
+         manually (see the README's Setup section)."
     );
     None
 }
 
 #[cfg(not(target_os = "windows"))]
-pub fn stop_backend(_pid: u32) {}
+pub fn stop_backend(_child: CommandChild) {}

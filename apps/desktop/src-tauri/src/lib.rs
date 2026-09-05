@@ -26,6 +26,7 @@ pub fn run() {
       start_loopback_capture,
       stop_loopback_capture
     ])
+    .plugin(tauri_plugin_shell::init())
     .setup(|app| {
       if cfg!(debug_assertions) {
         app.handle().plugin(
@@ -36,12 +37,12 @@ pub fn run() {
       }
 
       // Runs on a background thread so the window shows immediately —
-      // Docker/API startup can take a few seconds and must never block that.
+      // sidecar startup can take a moment and must never block that.
       let app_handle = app.handle().clone();
       std::thread::spawn(move || {
-        if let Some(pid) = start_backend() {
+        if let Some(child) = start_backend(&app_handle) {
           let state = app_handle.state::<BackendHandle>();
-          *state.0.lock().unwrap() = Some(pid);
+          *state.0.lock().unwrap() = Some(child);
         }
       });
 
@@ -50,9 +51,9 @@ pub fn run() {
     .on_window_event(|window, event| {
       if let tauri::WindowEvent::CloseRequested { .. } = event {
         let state = window.state::<BackendHandle>();
-        let pid = state.0.lock().unwrap().take();
-        if let Some(pid) = pid {
-          stop_backend(pid);
+        let child = state.0.lock().unwrap().take();
+        if let Some(child) = child {
+          stop_backend(child);
         }
       }
     })
