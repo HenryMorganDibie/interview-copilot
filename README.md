@@ -24,13 +24,13 @@ flowchart TD
     subgraph Backend["Local API (Node/Express, 127.0.0.1 only)"]
         Whisper["Groq Whisper\ntranscription"]
         Detect["Question detection\n(debounced, LLM-classified)"]
-        Retrieve["Evidence retrieval\n(pgvector cosine + full-text, RRF-fused)"]
+        Retrieve["Evidence retrieval\n(SQLite: cosine + full-text, RRF-fused)"]
         Router["LLM Router\nOllama -> Groq -> Anthropic(opt)"]
         Web["Web research\n(Tavily, only if requiresWebResearch)"]
     end
 
     subgraph Store["Knowledge Base"]
-        PG[("Postgres + pgvector")]
+        PG[("SQLite (packages/database)")]
         GH["GitHub repos\n(README + extracted profile)"]
         CV["CV / documents"]
     end
@@ -96,7 +96,7 @@ node docs/eval/run-eval.mjs docs/eval/eval-set.json docs/eval/detection-set.json
 | First-token latency (mean / median / P90) | 1.6s / 1.3s / 2.7s |
 | Full-answer latency (mean / median / P90) | 2.3s / 2.3s / 3.2s |
 
-Retrieval is hybrid since 2026-09-05: cosine similarity and Postgres full-text search run concurrently and get fused by Reciprocal Rank Fusion (`packages/knowledge/src/retrieve.ts`), catching cases plain embedding similarity misses (a chunk naming a specific project or acronym that doesn't carry much semantic weight on its own). An LLM-based rerank approach was tried first and measured head-to-head against this one — same 8/9 hit rate, but 2-3x the latency from the extra model call, so it was removed rather than shipped. The one recurring miss (a "MVNO Intelligence Hub" question) turned out not to be a retrieval problem at all once root-caused: the question analyzer's personal-vs-not classification is non-deterministic across calls, and when it misclassifies a personal question as non-personal, the evidence bar intentionally rises (see [grounding policy](#grounding-policy) point 5) — no retrieval improvement reaches a chunk excluded at that later gate. Full account, including the latency comparison numbers for both approaches: [`docs/eval/RESULTS.md`](docs/eval/RESULTS.md#2026-09-05-retrieval-upgrade--llm-rerank-vs-bm25rrf-hybrid-measured-head-to-head).
+Retrieval is hybrid since 2026-09-05: cosine similarity and SQLite FTS5 full-text search run concurrently and get fused by Reciprocal Rank Fusion (`packages/knowledge/src/retrieve.ts`), catching cases plain embedding similarity misses (a chunk naming a specific project or acronym that doesn't carry much semantic weight on its own). An LLM-based rerank approach was tried first and measured head-to-head against this one — same 8/9 hit rate, but 2-3x the latency from the extra model call, so it was removed rather than shipped. The one recurring miss (a "MVNO Intelligence Hub" question) turned out not to be a retrieval problem at all once root-caused: the question analyzer's personal-vs-not classification is non-deterministic across calls, and when it misclassifies a personal question as non-personal, the evidence bar intentionally rises (see [grounding policy](#grounding-policy) point 5) — no retrieval improvement reaches a chunk excluded at that later gate. Full account, including the latency comparison numbers for both approaches: [`docs/eval/RESULTS.md`](docs/eval/RESULTS.md#2026-09-05-retrieval-upgrade--llm-rerank-vs-bm25rrf-hybrid-measured-head-to-head).
 
 First-token latency clears the sub-2s target since the 2026-09-05 live-router fix (see [below](#interviewer-audio-accuracy-and-latency)), which that same re-run caught a real regression in (the live router had no fallback left once Groq's free-tier rate limit was hit) — full account in [`docs/eval/RESULTS.md`](docs/eval/RESULTS.md#2026-09-05-re-run-post-interviewer-audio-accuracy-and-latency-fix).
 
@@ -124,7 +124,7 @@ No transcription pipeline is 100% accurate for every accent/audio path (Meet, Zo
 This is a **single-user, local-first desktop tool**, not a multi-tenant service:
 
 - The API binds to `127.0.0.1` only — never reachable from outside the machine.
-- All provider API keys (Groq, GitHub, Tavily) live server-side in `apps/api/.env`, never sent to the frontend.
+- All provider API keys (Groq, GitHub, Tavily) live server-side in a `.env` file (`apps/api/.env` in dev, the installed app's config directory when bundled), never sent to the frontend.
 - The GitHub token is held in an in-memory process variable, not persisted to disk or a database — process-local by design for a tool one person runs on their own machine.
 - No candidate data is sent to any provider beyond what's needed for that specific request (transcription, embeddings, generation).
 
@@ -135,7 +135,7 @@ This is a **single-user, local-first desktop tool**, not a multi-tenant service:
 | Status | ✅ Supported, fully verified | 🟡 Beta, mic-only | ❌ Not attempted |
 | Interviewer/system-audio capture | Yes (native WASAPI) | No | No |
 | Mic capture, knowledge base, retrieval, LLM router, GitHub ingestion, job matching | Yes | Yes | — |
-| Backend auto-start on launch | Yes | No — start Postgres + `apps/api` manually | — |
+| Backend auto-start on launch | Yes (bundled sidecar) | No — run `apps/api` manually | — |
 | Installer | `.msi` / NSIS `.exe` | `.dmg` (arm64 only, unsigned) | — |
 
 **Windows** is the primary, fully-verified platform — the interviewer-audio capture path (`apps/desktop/src-tauri/src/loopback.rs`) is native Rust against WASAPI, Windows' own audio API. That's a deliberate choice: it's what let this project catch and fix the real capture/latency bugs documented [below](#interviewer-audio-accuracy-and-latency) at the OS-audio level, not a black box. The tradeoff is that system-audio capture is Windows-specific.
@@ -147,7 +147,7 @@ This is a **single-user, local-first desktop tool**, not a multi-tenant service:
 - The frontend already treats a failed system-audio start as non-fatal (mic-only fallback — the same code path used if mic/system permissions are denied on Windows), so this didn't need any frontend changes.
 - Built on a real `macos-latest` GitHub Actions runner (`.github/workflows/build-macos.yml`) since there's no Mac available to build or test on locally — a real Apple toolchain, not a cross-compile.
 - **Not yet run through a real interview on real Mac hardware** — treat it as best-effort, not verified.
-- Known limits: Apple Silicon only (no Intel build), unsigned (Gatekeeper blocks first launch — right-click the app and choose Open, or run `xattr -cr` on it), and backend auto-start isn't implemented (start Postgres and `apps/api` yourself first).
+- Known limits: Apple Silicon only (no Intel build), unsigned (Gatekeeper blocks first launch — right-click the app and choose Open, or run `xattr -cr` on it), and the bundled-sidecar backend auto-start (`scripts/build-api-sidecar.mjs`) is Windows-only today — run `apps/api` yourself first (no Docker/Postgres needed either way now, just Node).
 
 **Which build should you use?** Prefer Windows if you want full interviewer-audio capture and the most polished, verified experience. Use the macOS beta only if you're on Apple Silicon and are fine with mic-only capture plus starting the backend manually.
 
@@ -162,7 +162,7 @@ Actively in development. Working end-to-end, verified against the real running a
 - Desktop shell (Tauri + React + Tailwind + shadcn/ui), packaged as a real Windows installer (MSI/NSIS)
 - Mic capture + native Windows (WASAPI) system-audio loopback capture, both transcribed via Groq Whisper
 - Provider-agnostic LLM router with automatic failover (benchmarked local Ollama pool → Groq → optional Anthropic)
-- Knowledge base: multi-file CV/document upload, chunking, local embeddings, idempotent ingestion (re-ingesting the same source replaces it, not a duplicate), hybrid retrieval (cosine similarity + Postgres full-text search, fused via Reciprocal Rank Fusion) for interview answers, and separate word-boundary keyword matching for job-requirement matching
+- Knowledge base: multi-file CV/document upload, chunking, local embeddings, SQLite storage (no separate database server), idempotent ingestion (re-ingesting the same source replaces it, not a duplicate), hybrid retrieval (cosine similarity + SQLite FTS5 full-text search, fused via Reciprocal Rank Fusion) for interview answers, and separate word-boundary keyword matching for job-requirement matching
 - GitHub repo ingestion (OAuth Device Flow by default, zero setup — or a pasted personal access token), multi-repo bulk ingestion, README + structured project-profile extraction
 - Job description parsing, hybrid requirement matching, strongest-story ranking, weak-area detection, likely questions, STAR story drafts
 - Live session loop: question detection (debounced, noise-filtered) → grounded streaming answer
@@ -181,7 +181,7 @@ packages/
   shared/     Shared TypeScript types
   ai/         LLM provider abstraction + router (Ollama/Groq/Anthropic)
   knowledge/  Document parsing, chunking, embeddings, retrieval, job matching
-  database/   Postgres/pgvector client
+  database/   SQLite client (packages/database) — no separate server, just a file
   github/     GitHub ingestion (OAuth Device Flow or PAT)
   search/     Web research provider abstraction
   interview/  Live session orchestrator (question detection + answer loop)
@@ -189,23 +189,23 @@ packages/
 docs/
   screenshots/  Real screenshots used above
   eval/         Evaluation harness, question sets, and results
-infra/
-  docker-compose.yml   Local Postgres + pgvector
-  schema.sql           Database schema
+scripts/
+  build-api-sidecar.mjs  Bundles apps/api into the standalone sidecar .exe Tauri ships
 ```
 
 ## Setup
 
-**If you downloaded a release installer**: the app currently still needs the backend run from a real clone of this repo (below) — the installer bundles the desktop UI, not the API server or database. On the original dev machine the installed app auto-starts both because `backend.rs` shells out to a hardcoded local path; on any other machine that auto-start silently fails and the app opens to a UI with nothing behind it (knowledge base, retrieval, everything). This is a known, real gap, not yet fixed — closing it means bundling the API as a standalone sidecar binary and replacing (or embedding) Postgres/pgvector with something that ships inside the installer, tracked as follow-up work, not shipped in this release.
+**If you downloaded a release installer**: it's genuinely self-contained now — desktop UI, API server, and database all ship inside it, with zero Docker/Postgres/Node install required. The API server is bundled as a standalone executable (`scripts/build-api-sidecar.mjs` bundles it with esbuild, then uses Node's Single Executable Application feature to bake a real Node runtime into one `.exe` — no separate Node install, no `node_modules`, needed at runtime), launched as a Tauri sidecar (`apps/desktop/src-tauri/src/backend.rs`) pointed at the app's real per-machine data directory instead of a hardcoded dev-machine path. The database is SQLite (`packages/database`) — this app's real dataset (a handful of CVs/repos, low hundreds of chunks at most) is far below the scale where Postgres/pgvector's approximate-nearest-neighbor index earns its complexity, so retrieval is a linear-scan cosine similarity in JS plus SQLite FTS5 for the keyword half of hybrid search, both sub-millisecond here. Verified for real: built a fresh installer, installed it, stopped Docker Desktop entirely, and confirmed the installed app's knowledge base, retrieval, and LLM-powered question analysis all work with nothing else running.
 
-Requirements: Node 22+, Rust (for the Tauri/WASAPI native module), Docker
-Desktop, and [Ollama](https://ollama.com) running locally.
+One real gap remains: provider API keys (Groq, GitHub PAT, Tavily) still come from a `.env` file, now read from the app's config directory — but nothing in the UI creates that file for a first-time user yet. Until there's a real in-app Settings page for entering a Groq key, a fresh install has a working knowledge base/UI but no LLM-powered features unless you either place a `.env` there yourself or run Ollama locally with pulled models.
+
+**For local development:**
+
+Requirements: Node 22+, Rust (for the Tauri/WASAPI native module), and [Ollama](https://ollama.com) running locally.
 
 ```bash
 npm install
 cp .env.example apps/api/.env   # fill in at least GROQ_API_KEY
-docker compose -f infra/docker-compose.yml up -d
-docker exec -i interview-copilot-postgres psql -U interview_copilot -d interview_copilot < infra/schema.sql
 ollama pull all-minilm          # embeddings
 ```
 
@@ -216,6 +216,12 @@ Run the backend and frontend in separate terminals:
 ```bash
 npm run dev --workspace=apps/api
 npm run tauri dev --workspace=apps/desktop
+```
+
+To rebuild the sidecar binary after changing anything under `apps/api` or the packages it depends on (this also runs automatically as part of `npx tauri build`):
+
+```bash
+npm run build:api-sidecar
 ```
 
 ## License
