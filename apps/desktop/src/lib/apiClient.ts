@@ -261,3 +261,31 @@ export async function ingestGitHubRepo(owner: string, repo: string): Promise<{ s
   }
   return res.json();
 }
+
+export type Settings = { groqApiKeyConfigured: boolean; ollamaBaseUrl: string };
+
+export async function getSettings(): Promise<Settings> {
+  const res = await fetch(`${API_BASE_URL}/api/settings`);
+  if (!res.ok) return { groqApiKeyConfigured: false, ollamaBaseUrl: "http://127.0.0.1:11434" };
+  return res.json();
+}
+
+/**
+ * Only ever include a field the user actually typed something new into --
+ * an omitted field leaves that setting untouched on the backend, never
+ * overwrites it with blank. Groq's key is never read back from the
+ * backend (only whether one is set), so there's nothing to "leave blank
+ * to keep" other than simply not sending the field at all.
+ */
+export async function saveSettings(update: { groqApiKey?: string; ollamaBaseUrl?: string }): Promise<Settings & { restartRequired: boolean }> {
+  const res = await fetch(`${API_BASE_URL}/api/settings`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(update),
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(body.error ?? "Failed to save settings");
+  }
+  return res.json();
+}

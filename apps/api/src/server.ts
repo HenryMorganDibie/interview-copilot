@@ -39,11 +39,16 @@ import type {
 // path (e.g. the Tauri app's config directory) regardless of the process's
 // working directory when Tauri spawns it. Falls back to dotenv's normal
 // CWD-relative ".env" lookup for local dev (npm run dev from apps/api).
-loadDotenv(process.env.ENV_FILE_PATH ? { path: process.env.ENV_FILE_PATH } : undefined);
+// Resolved to a real path either way (not left to dotenv's own default
+// resolution) so the settings endpoints below write to the exact same
+// file this process actually loaded from.
+const ENV_FILE_PATH = process.env.ENV_FILE_PATH || path.resolve(process.cwd(), ".env");
+loadDotenv({ path: ENV_FILE_PATH });
 
 const PORT = Number(process.env.API_PORT ?? 8722);
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
+const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL;
 // A registered, public OAuth App client ID — not a secret. GitHub's device
 // flow needs no client secret (see packages/github/src/deviceFlow.ts), so
 // this can be embedded the same way `gh`/other public CLIs embed their own
@@ -66,6 +71,7 @@ let githubToken: string | undefined = process.env.GITHUB_TOKEN;
 const router = createDefaultRouter({
   groqApiKey: GROQ_API_KEY,
   anthropicApiKey: ANTHROPIC_API_KEY,
+  ollamaBaseUrl: OLLAMA_BASE_URL,
 });
 // Live-session answer generation and question analysis skip the local pool
 // for the common case — the candidate is watching this happen in real time,
@@ -80,6 +86,7 @@ const router = createDefaultRouter({
 const liveRouter = createDefaultRouter({
   groqApiKey: GROQ_API_KEY,
   anthropicApiKey: ANTHROPIC_API_KEY,
+  ollamaBaseUrl: OLLAMA_BASE_URL,
   includeLocalPool: "last",
 });
 // Question analysis is a classification task (a few short JSON fields),
@@ -95,6 +102,7 @@ const analysisRouter = createDefaultRouter({
   groqApiKey: GROQ_API_KEY,
   groqModels: ["openai/gpt-oss-20b", "openai/gpt-oss-120b"],
   anthropicApiKey: ANTHROPIC_API_KEY,
+  ollamaBaseUrl: OLLAMA_BASE_URL,
   includeLocalPool: "last",
 });
 
@@ -471,6 +479,90 @@ app.post("/api/job-description/analyze", async (req, res) => {
   } catch (error) {
     console.error("job description analysis failed:", error);
     res.status(502).json({ error: "Job description analysis unavailable" });
+  }
+});
+
+const EDITABLE_ENV_KEYS = ["GROQ_API_KEY", "OLLAMA_BASE_URL"] as const;
+type EditableEnvKey = (typeof EDITABLE_ENV_KEYS)[number];
+
+/**
+ * Updates only the specific keys given, preserving every other line
+ * (comments, other keys -- GITHUB_TOKEN, WEB_SEARCH_API_KEY, whatever else
+ * is already in there) untouched. A settings UI must never be able to
+ * clobber real, working configuration it doesn't even show the user.
+ */
+function upsertEnvFile(filePath: string, updates: Partial<Record<EditableEnvKey, string>>): void {
+  let lines: string[] = [];
+  try {
+    lines = fs.readFileSync(filePath, "utf-8").split("\n");
+  } catch {
+    // No existing file yet -- start fresh rather than failing.
+  }
+  const remaining = new Map(Object.entries(updates));
+  const updatedLines = lines.map((line) => {
+    const match = line.match(/^([A-Z0-9_]+)=/);
+    if (match && remaining.has(match[1])) {
+      const key = match[1];
+      const value = remaining.get(key)!;
+      remaining.delete(key);
+      return `${key}=${value}`;
+    }
+    return line;
+  });
+  for (const [key, value] of remaining) {
+    updatedLines.push(`${key}=${value}`);
+  }
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, updatedLines.join("\n"));
+}
+
+app.get("/api/settings", (_req, res) => {
+  // The Groq key itself is never sent to the frontend, only whether one is
+  // set -- same principle as GitHub's token handling above.
+  res.json({
+    groqApiKeyConfigured: Boolean(process.env.GROQ_API_KEY),
+    ollamaBaseUrl: process.env.OLLAMA_BASE_URL || "http://127.0.0.1:11434",
+  });
+});
+
+app.post("/api/settings", (req, res) => {
+  const groqApiKey = req.body?.groqApiKey as string | undefined;
+  const ollamaBaseUrl = req.body?.ollamaBaseUrl as string | undefined;
+  const updates: Partial<Record<EditableEnvKey, string>> = {};
+
+  // Only ever write a field the caller sent a real, non-empty value for --
+  // an omitted or blank field (e.g. a settings form field the user left
+  // untouched) must never overwrite an existing working key with an empty
+  // one. This is the entire point of a settings page that never gets to
+  // see the current secret value reflected back to it.
+  if (groqApiKey?.trim()) {
+    updates.GROQ_API_KEY = groqApiKey.trim();
+    process.env.GROQ_API_KEY = groqApiKey.trim();
+  }
+  if (ollamaBaseUrl?.trim()) {
+    updates.OLLAMA_BASE_URL = ollamaBaseUrl.trim();
+    process.env.OLLAMA_BASE_URL = ollamaBaseUrl.trim();
+  }
+
+  if (Object.keys(updates).length === 0) {
+    res.status(400).json({ error: "Nothing to save" });
+    return;
+  }
+
+  try {
+    upsertEnvFile(ENV_FILE_PATH, updates);
+    // Deliberately not hot-reloading the LLM routers -- they're built once
+    // at startup from these values, and rebuilding them live is a bigger,
+    // riskier change than just asking for a restart, which happens rarely.
+    res.json({
+      ok: true,
+      restartRequired: true,
+      groqApiKeyConfigured: Boolean(process.env.GROQ_API_KEY),
+      ollamaBaseUrl: process.env.OLLAMA_BASE_URL || "http://127.0.0.1:11434",
+    });
+  } catch (error) {
+    console.error("failed to save settings:", error);
+    res.status(500).json({ error: "Failed to save settings" });
   }
 });
 
