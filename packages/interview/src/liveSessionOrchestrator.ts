@@ -15,13 +15,21 @@ export type LiveSessionOrchestratorOptions = {
   responseMode?: ResponseMode;
   /**
    * How long to wait after the interviewer stops talking before treating it
-   * as a finished turn. Default 900ms. Kept short deliberately: the
+   * as a finished turn. Default 500ms (cut from 900ms after measuring the
+   * full pipeline — see below). Kept short deliberately: the
    * interviewer-audio capture itself now segments on natural pauses (~450ms
    * of silence, see loopback.rs), so a transcript event arriving here
    * already corresponds to the end of an utterance most of the time — this
    * debounce only needs to cover the case where the interviewer pauses
    * mid-question before continuing, not re-absorb a whole extra chunking
-   * delay on top of it.
+   * delay on top of it. Measured full pipeline: 450ms VAD hang + this
+   * debounce + ~1s question analysis + ~2s answer generation — the two
+   * debounces together were a third of total latency for no real benefit
+   * beyond tolerating a mid-question pause, so this one was cut further.
+   * Trade-off: a compound question with an unusually long pause between
+   * clauses is somewhat more likely to split into two separate turns
+   * (each still answered correctly, just as two turns instead of one —
+   * see README's interviewer-audio section) rather than being merged.
    */
   silenceMs?: number;
   /** Below this confidence (or type "unknown"), a "question" is treated as noise/hallucination and skipped. Default 0.35. */
@@ -67,7 +75,7 @@ export class LiveSessionOrchestrator {
 
   constructor(opts: LiveSessionOrchestratorOptions) {
     this.opts = opts;
-    this.silenceMs = opts.silenceMs ?? 900;
+    this.silenceMs = opts.silenceMs ?? 500;
     this.minConfidence = opts.minConfidence ?? 0.35;
   }
 

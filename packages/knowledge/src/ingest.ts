@@ -63,7 +63,18 @@ export async function ingestText(input: IngestTextInput): Promise<IngestResult> 
   });
 
   const chunks = chunkText(normalized);
-  const embeddings = await embeddingClient.embedBatch(chunks);
+  // Embed with the source name folded in (but store the chunk's own text
+  // unprefixed) — a deliberately-named source ("Tell Me About Yourself -
+  // Eval Trainer Role") carries real topical signal that pure chunk-content
+  // similarity otherwise discards entirely. Confirmed directly: without
+  // this, a prepared self-intro answer scored *lower* against the query
+  // "Tell me about yourself" than unrelated CV bullets, because the
+  // answer's own content (specific project names/details) doesn't repeat
+  // the generic question's wording — exactly the case a title is meant to
+  // resolve, the same way a filename helps a person find the right doc.
+  const embeddings = await embeddingClient.embedBatch(
+    chunks.map((chunk) => `${input.sourceName}\n\n${chunk}`),
+  );
 
   await insertKnowledgeChunks(
     chunks.map((content, i) => ({

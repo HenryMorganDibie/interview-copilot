@@ -27,12 +27,32 @@ const STRICT_USEFUL_SCORE = 0.5;
 /** Converts retrieved knowledge chunks into the Evidence shape the answer generator consumes. */
 export function chunksToEvidence(chunks: RetrievedChunk[], strict = false): EvidenceItem[] {
   const threshold = strict ? STRICT_USEFUL_SCORE : MIN_USEFUL_SCORE;
-  return chunks
-    .filter((c) => c.score >= threshold)
-    .map((c) => ({
-      claim: c.content,
-      type: c.score >= DIRECT_EVIDENCE_SCORE ? "direct" : "inferred",
-      sourceId: c.sourceName,
-      confidence: c.score,
-    }));
+  const aboveThreshold = chunks.filter((c) => c.score >= threshold);
+
+  // A broad/open-ended personal question ("tell me about yourself") can
+  // legitimately have no chunk clear MIN_USEFUL_SCORE at all — confirmed
+  // directly: a candidate's own real CV profile summary and a prepared
+  // self-intro answer both scored *below* the threshold (and even below
+  // several genuinely-irrelevant technical chunks) purely because the raw
+  // embedding-similarity signal is weak for generic query phrasing, not
+  // because the content isn't relevant. In non-strict mode (i.e. the
+  // question is plausibly personal, not a current-events question we need
+  // to protect from misattribution) it's better to answer from the single
+  // best-available real chunk at low confidence than to fall back to
+  // ungrounded generic filler because "no evidence cleared the bar" —
+  // the strict path (used for non-personal questions) is untouched, so
+  // this can't reintroduce the earlier evidence-leaking bug.
+  // Slice(0, 3), not just the single best chunk: a prepared answer that
+  // got split across chunk boundaries (its opening context in one, its
+  // concluding sentence in another) otherwise only contributes whichever
+  // half happened to score marginally higher, silently dropping the rest
+  // of the same prepared answer.
+  const useChunks = !strict && aboveThreshold.length === 0 ? chunks.slice(0, 3) : aboveThreshold;
+
+  return useChunks.map((c) => ({
+    claim: c.content,
+    type: c.score >= DIRECT_EVIDENCE_SCORE ? "direct" : "inferred",
+    sourceId: c.sourceName,
+    confidence: c.score,
+  }));
 }

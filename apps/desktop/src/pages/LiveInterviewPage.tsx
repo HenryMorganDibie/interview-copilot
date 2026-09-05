@@ -30,6 +30,17 @@ export function LiveInterviewPage() {
 
   const providersRef = useRef<SpeechToTextProvider[]>([]);
   const orchestratorRef = useRef<LiveSessionOrchestrator | null>(null);
+  /**
+   * Tracks whether the turn currently generating is a continuation of the
+   * previous one (the orchestrator classified it "follow_up"/"clarification"
+   * — typically a compound question that got split across a pause longer
+   * than the silence debounce, see liveSessionOrchestrator.ts) rather than a
+   * fresh new question. Read in onAnswerComplete to decide whether to merge
+   * key points/sources into the existing answer or start over — a ref, not
+   * state, since it only needs to be current at the moment the *next*
+   * callback fires, not drive a re-render itself.
+   */
+  const isContinuationRef = useRef(false);
 
   useEffect(() => {
     return () => {
@@ -56,14 +67,31 @@ export function LiveInterviewPage() {
       generateAnswer: generateAnswerStream,
       onTranscript: (event) => setTranscript((prev) => [...prev, event]),
       onQuestionDetected: (question) => {
-        setCurrentQuestion(question.text);
-        setAnswerText("");
-        setAnswer(null);
+        // A "follow_up"/"clarification" turn continues the previous
+        // question rather than replacing it — most often a compound
+        // question that got split across a pause longer than the silence
+        // debounce. Appending keeps the full exchange visible instead of
+        // the second half silently erasing the first the moment it starts
+        // streaming in.
+        const isContinuation =
+          question.analysis.type === "follow_up" || question.analysis.type === "clarification";
+        isContinuationRef.current = isContinuation;
+        setCurrentQuestion((prev) => (isContinuation && prev ? `${prev} ${question.text}` : question.text));
+        setAnswerText((prev) => (isContinuation && prev ? `${prev}\n\n` : ""));
+        if (!isContinuation) setAnswer(null);
         setGenerating(true);
       },
       onAnswerDelta: (delta) => setAnswerText((prev) => prev + delta),
       onAnswerComplete: (finalAnswer) => {
-        setAnswer(finalAnswer);
+        setAnswer((prev) =>
+          isContinuationRef.current && prev
+            ? {
+                ...finalAnswer,
+                keyPoints: [...prev.keyPoints, ...finalAnswer.keyPoints],
+                sources: [...prev.sources, ...finalAnswer.sources],
+              }
+            : finalAnswer,
+        );
         setGenerating(false);
       },
       onError: (message) => {
