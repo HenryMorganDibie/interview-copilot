@@ -5,6 +5,9 @@
 Interview Copilot is a local-first AI system for **interview preparation and simulated interview practice**: it listens to a mock or explicitly-permitted interview, detects when the interviewer has asked a real question, retrieves your strongest relevant evidence from your own CV and GitHub projects, and generates a concise answer grounded in what you've actually done.
 
 [![Download for Windows](https://img.shields.io/badge/Download-Windows-0078D6?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/HenryMorganDibie/interview-copilot/releases/latest)
+[![Download for macOS (beta)](https://img.shields.io/badge/Download-macOS_(beta)-000000?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/HenryMorganDibie/interview-copilot/releases/latest)
+
+Windows is the fully-verified platform (see the rest of this README for what's actually been tested). The macOS build is Apple Silicon only, mic-only (no interviewer-audio capture yet), and hasn't been run on real Mac hardware — see [Platform support](#platform-support) before relying on it.
 
 ![Demo: knowledge base, job description matching, and a live interview answer](docs/screenshots/demo.gif)
 
@@ -125,9 +128,11 @@ This is a **single-user, local-first desktop tool**, not a multi-tenant service:
 
 ## Platform support
 
-**Windows only, today.** The interviewer-audio capture path (`apps/desktop/src-tauri/src/loopback.rs`) is native Rust against WASAPI, Windows' own audio API — that's a deliberate choice (it's what let this project catch and fix the real capture/latency bugs documented [below](#interviewer-audio-accuracy-and-latency) at the OS-audio level, not a black box), but it means the loopback capture, and the installer (`.msi`/NSIS `.exe`), are Windows-specific. Mic capture and everything else (knowledge base, retrieval, LLM router, job matching) has no OS dependency and would port cleanly.
+**Windows** is the primary, fully-verified platform — the interviewer-audio capture path (`apps/desktop/src-tauri/src/loopback.rs`) is native Rust against WASAPI, Windows' own audio API. That's a deliberate choice (it's what let this project catch and fix the real capture/latency bugs documented [below](#interviewer-audio-accuracy-and-latency) at the OS-audio level, not a black box), but it means system-audio capture is Windows-specific.
 
-The path to macOS/Linux support is a second native loopback backend, not a rewrite of the rest of the app: macOS via `ScreenCaptureKit` (system-audio capture, macOS 13+) or a virtual audio device (e.g. BlackHole) behind the same `SystemAudioCaptureProvider` interface already used on the frontend; Linux via PipeWire/PulseAudio monitor sources. Not attempted here — this needs real macOS/Linux hardware to build and verify against (this project's own standard, demonstrated throughout this README, is "verified for real" rather than shipping untested platform code), which wasn't available when this was written. A contribution implementing either is welcome.
+**macOS (Apple Silicon) has a beta build on the [releases page](https://github.com/HenryMorganDibie/interview-copilot/releases/latest) — mic-only, unverified on real hardware.** Everything with no OS dependency (knowledge base, retrieval, LLM router, GitHub ingestion, job matching, the live session loop) is plain TypeScript/React and works the same as on Windows; `wasapi`/`hound` are gated to Windows-only Cargo dependencies (`Cargo.toml`) and `loopback.rs` is swapped for a same-signature stub (`loopback_stub.rs`) so the Rust side actually compiles on macOS. The frontend already treats a failed system-audio start as non-fatal (mic-only fallback, same code path used if mic/system permissions are denied on Windows), so this didn't need any frontend changes. Built on a real `macos-latest` GitHub Actions runner (`.github/workflows/build-macos.yml`) since there's no Mac available to build or test on locally — a real Apple toolchain, not a cross-compile, but **not yet run through a real interview on real Mac hardware**, so treat it as best-effort. Known limits: arm64 only (no Intel build yet), unsigned (Gatekeeper will block first launch — right-click the app and choose Open, or `xattr -cr` it), and backend auto-start isn't implemented on macOS — start Postgres and `apps/api` yourself first.
+
+Linux isn't attempted at all yet. The path there is the same shape as macOS: PipeWire/PulseAudio monitor sources behind the same `SystemAudioCaptureProvider` interface, and it would need its own CI build the same way. A contribution implementing either the Linux backend or real macOS hardware verification is welcome.
 
 ## Status
 
@@ -143,7 +148,7 @@ Actively in development. Working end-to-end, verified against the real running a
 - Configurable response modes (direct / talking points / follow-up), each visible in the Session Setup page so it's clear what you're choosing
 - Web research (Tavily), gated to only current-info questions
 
-Known gaps: same-room speaker+mic test rigs still add acoustic cross-talk that headphones avoid entirely — that's a physical setup issue, not something software fixes. Windows-only today — see [Platform support](#platform-support).
+Known gaps: same-room speaker+mic test rigs still add acoustic cross-talk that headphones avoid entirely — that's a physical setup issue, not something software fixes. Windows is the only fully-verified platform; the macOS beta build is mic-only and untested on real hardware, and Linux isn't attempted — see [Platform support](#platform-support).
 
 ## Project structure
 
